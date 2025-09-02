@@ -1,11 +1,13 @@
 #ifndef ARTIC_LOG_H
 #define ARTIC_LOG_H
 
+#include <fmt/core.h>
 #include <iostream>
 #include <cstring>
 #include <cassert>
 #include <utility>
 #include <string_view>
+#include <sstream>
 
 #ifdef COLORIZE
     #ifdef _WIN32
@@ -28,6 +30,7 @@
 #endif
 
 #include "artic/loc.h"
+#include <vector>
 
 namespace artic {
 
@@ -171,12 +174,34 @@ template <typename... Args>
 void error(const char* fmt, Args&&... args) {
     log::format(err, "{}: ", error_style("error"));
     log::format(err, fmt, std::forward<Args>(args)...);
-    out.stream << std::endl;
+    err.stream << std::endl;
+}
+
+template <typename... Args>
+void debug(const char* fmt, Args&&... args) {
+    Output log(std::clog, false);
+    log::format(log, fmt, std::forward<Args>(args)...);
+    log.stream << std::endl;
 }
 
 } // namespace log
 
 class Locator;
+
+struct Diagnostic {
+    Loc loc;
+    std::string message;
+    enum Severity {
+        Error = 1,
+        Warning = 2,
+        Information = 3,
+        Hint = 4
+    } severity;
+
+    Diagnostic(const Loc& loc, const std::string& message, Severity severity)
+        : loc(loc), message(message), severity(severity)
+    {}
+};
 
 struct Log {
     Log(log::Output& out, Locator* locator = nullptr, size_t errors = 0, size_t warns = 0)
@@ -194,7 +219,10 @@ struct Log {
     size_t max_errors = 0;
     size_t errors;
     size_t warns;
+    std::vector<Diagnostic> diagnostics;
 };
+
+static inline bool is_lsp = true; // TODO
 
 /// Base class for objects that have a log attached to them.
 struct Logger {
@@ -212,6 +240,18 @@ struct Logger {
     template <typename... Args>
     void error(const Loc& loc, const char* fmt, Args&&... args) {
         if (!log.is_full()) {
+            if(is_lsp) {
+                std::stringbuf buf;
+                std::ostream str(&buf);
+                log::Output o(str, false);
+                log::format(o, fmt, std::forward<Args>(args)...);
+                std::string message = buf.str();
+                log.diagnostics.push_back(Diagnostic(
+                    loc,
+                    message,
+                    Diagnostic::Error
+                ));
+            }
             error(fmt, std::forward<Args>(args)...);
             diagnostic(loc, log::Style::Red, '^');
         } else
@@ -224,6 +264,18 @@ struct Logger {
         if (warns_as_errors)
             error(loc, fmt, std::forward<Args>(args)...);
         else if (!log.is_full()) {
+            if (is_lsp) {
+                std::stringbuf buf;
+                std::ostream str(&buf);
+                log::Output o(str, false);
+                log::format(o, fmt, std::forward<Args>(args)...);
+                std::string message = buf.str();
+                log.diagnostics.push_back(Diagnostic(
+                    loc,
+                    message,
+                    Diagnostic::Warning
+                ));
+            }
             warn(fmt, std::forward<Args>(args)...);
             diagnostic(loc, log::Style::Yellow, '^');
         } else
@@ -234,6 +286,18 @@ struct Logger {
     template <typename... Args>
     void note(const Loc& loc, const char* fmt, Args&&... args) {
         if (!log.is_full()) {
+            if(is_lsp) {
+                std::stringbuf buf;
+                std::ostream str(&buf);
+                log::Output o(str, false);
+                log::format(o, fmt, std::forward<Args>(args)...);
+                std::string message = buf.str();
+                log.diagnostics.push_back(Diagnostic(
+                    loc,
+                    message,
+                    Diagnostic::Information
+                ));
+            } 
             note(fmt, std::forward<Args>(args)...);
             diagnostic(loc, log::Style::Cyan, '-');
         }

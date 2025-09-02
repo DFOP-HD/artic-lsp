@@ -37,8 +37,43 @@ endif()
 
 add_executable(artic main.cpp)
 set_target_properties(artic PROPERTIES CXX_STANDARD 20)
+
+# Add debug symbols for better stack traces
+target_compile_options(artic PRIVATE -g -O0)
+target_compile_options(libartic PRIVATE -g -O0)
+
 target_compile_definitions(artic PUBLIC -DARTIC_VERSION_MAJOR=${PROJECT_VERSION_MAJOR} -DARTIC_VERSION_MINOR=${PROJECT_VERSION_MINOR})
 target_link_libraries(artic PUBLIC libartic)
+
+# LSP support
+option(ARTIC_BUILD_LSP "Build Artic with Language Server Protocol support" ON)
+
+if(ARTIC_BUILD_LSP)
+    # Add LSP source files
+    target_sources(artic PRIVATE
+        ls/server.cpp
+        ls/workspace.cpp
+        ls/crash.cpp
+        ls/compile.cpp
+    )
+    
+    # Include LSP framework headers
+    target_include_directories(artic PRIVATE
+        ../lsp-framework  # For lsp/ includes
+        ../lsp-framework/build/generated  # For generated messages.h and types.h
+    )
+    
+    # Link with LSP framework library
+    target_link_libraries(artic PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../lsp-framework/build/liblsp.a
+    )
+    
+    # Enable LSP compilation
+    target_compile_definitions(artic PRIVATE 
+        ENABLE_LSP=1
+    )
+endif()
+
 if (Thorin_HAS_JSON_SUPPORT)
     target_compile_definitions(artic PUBLIC -DENABLE_JSON)
     if (NOT TARGET nlohmann_json)

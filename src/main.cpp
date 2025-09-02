@@ -9,6 +9,10 @@
 #include "artic/emit.h"
 #include "artic/locator.h"
 
+#ifdef ENABLE_LSP
+#include "artic/ls/server.h"
+#endif
+
 #include <thorin/world.h>
 #include <thorin/be/codegen.h>
 #include <thorin/be/c/c.h>
@@ -35,18 +39,27 @@ static std::string_view file_without_ext(std::string_view path) {
 }
 
 static void usage() {
-    log::out << "usage: artic [options] files...\n"
-                "options:\n"
-                "  -h     --help                 Displays this message\n"
-                "         --version              Displays the version number\n"
-                "         --no-color             Disables colors in messages\n"
-                " -Wall   --enable-all-warnings  Enables all warnings\n"
-                " -Werror --warnings-as-errors   Treat warnings as errors\n"
-                "         --max-errors <n>       Sets the maximum number of error messages (unlimited by default)\n"
-                "         --print-ast            Prints the AST after parsing and type-checking\n"
-                "         --show-implicit-casts  Shows implicit casts as comments when printing the AST\n"
-                "         --emit-thorin          Prints the Thorin IR after code generation\n"
-                "         --emit-c-interface     Emits C interface for exported functions and imported types\n"
+    log::out <<
+                "Usage: artic [options] file...\n"
+                "Options:\n"
+                "  -h     --help                 Display this information\n"
+                "         --version              Display version information\n"
+                "         --lsp                  Start language server mode\n"
+                "         --no-color             Disable colored output\n"
+                "         --print-ast            Print the AST after type checking\n"
+                "         --show-implicit-casts  Show implicit casts in printed AST\n"
+                "  -Wall  --enable-all-warnings  Enable all warnings\n"
+                "  -Werror --warnings-as-errors  Treat warnings as errors\n"
+                "         --max-errors <n>       Stop after <n> errors (defaults to no limit)\n"
+                "         --emit-thorin          Emit Thorin IR in the output file\n"
+                "         --emit-c-interface     Emit C header file for exported functions\n"
+                "         --host-triple <name>   Target triple for host code generation (defaults to the native target)\n"
+                "         --host-cpu <name>      Target CPU for host code generation (defaults to the native CPU)\n"
+                "         --host-attr <attrs>    Target attributes for host code generation\n"
+                "         --hls-flags <flags>    Flags to pass to the HLS tool (for the HLS backend)\n"
+#ifdef ENABLE_JSON
+                "         --emit-json            Emit JSON file for device code\n"
+#endif
                 "         --log-level <lvl>      Changes the log level in Thorin (lvl = debug, verbose, info, warn, or error, defaults to error)\n"
                 "         --tab-width <n>        Sets the width of the TAB character in error messages or when printing the AST (in spaces, defaults to 2)\n"
                 "         --emit-c               Emits C code in the output file\n"
@@ -55,8 +68,7 @@ static void usage() {
 #endif
                 "  -g     --debug                Enable debug information in the output file\n"
                 "  -On                           Sets the optimization level (n = 0, 1, 2, or 3, defaults to 0)\n"
-                "  -o <name>                     Sets the module name (defaults to the first file name without its extension)\n"
-                ;
+                "  -o <name>                     Sets the module name (defaults to the first file name without its extension)\n";
 }
 
 static void version() {
@@ -90,6 +102,7 @@ struct ProgramOptions {
     std::vector<std::string> files;
     std::string module_name;
     bool exit = false;
+    bool lsp_mode = false;
     bool no_color = false;
     bool warns_as_errors = false;
     bool enable_all_warns = false;
@@ -144,6 +157,14 @@ struct ProgramOptions {
                     version();
                     exit = true;
                     return true;
+                } else if (matches(argv[i], "--lsp") || matches(argv[i], "--stdio")) {
+                    // TODO vscode likes to call artic with the arg --stdio. Try to remove that.
+#ifdef ENABLE_LSP
+                    lsp_mode = true;
+#else
+                    log::error("artic was built without LSP support");
+                    return false;
+#endif
                 } else if (matches(argv[i], "--no-color")) {
                     no_color = true;
                 } else if (matches(argv[i], "-Wall", "--enable-all-warnings")) {
@@ -246,7 +267,7 @@ struct ProgramOptions {
                         return false;
                     module_name = argv[++i];
                 } else {
-                    log::error("unknown option '{}'", argv[i]);
+                    log::error("unknown option lmao '{}'", argv[i]);
                     return false;
                 }
             } else
@@ -290,6 +311,19 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     if (opts.exit)
         return EXIT_SUCCESS;
+
+#ifdef ENABLE_LSP
+    // Handle LSP mode
+    if (opts.lsp_mode) {
+        try {
+            artic::ls::Server server;
+            return server.run();
+        } catch (const std::exception& e) {
+            log::error("LSP server error: {}", e.what());
+            return EXIT_FAILURE;
+        }
+    }
+#endif
 
     if (opts.no_color)
         log::err.colorized = log::out.colorized = false;
