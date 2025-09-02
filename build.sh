@@ -13,7 +13,7 @@ cmake -S . -B build \
   -DCMAKE_C_COMPILER=clang \
   -DCMAKE_CXX_COMPILER=clang++ \
   -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
-  -DBUILD_LSP=ON \
+  -DARTIC_BUILD_LSP=ON \
   -DCMAKE_BUILD_TYPE=Debug \
   -DThorin_DIR=$HOME/repos/upstream-anydsl/thorin/build/share/anydsl/cmake
 
