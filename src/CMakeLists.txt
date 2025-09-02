@@ -38,9 +38,8 @@ endif()
 add_executable(artic main.cpp)
 set_target_properties(artic PROPERTIES CXX_STANDARD 20)
 
-# Add debug symbols for better stack traces
-target_compile_options(artic PRIVATE -g -O0)
-target_compile_options(libartic PRIVATE -g -O0)
+target_compile_options(artic PRIVATE -Wno-deprecated-declarations)
+target_compile_options(libartic PRIVATE -Wno-deprecated-declarations)
 
 target_compile_definitions(artic PUBLIC -DARTIC_VERSION_MAJOR=${PROJECT_VERSION_MAJOR} -DARTIC_VERSION_MINOR=${PROJECT_VERSION_MINOR})
 target_link_libraries(artic PUBLIC libartic)
