@@ -15,7 +15,7 @@ cmake -S . -B build \
   -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
   -DARTIC_BUILD_LSP=ON \
   -DCMAKE_BUILD_TYPE=Debug \
-  -DThorin_DIR=$HOME/repos/upstream-anydsl/thorin/build/share/anydsl/cmake
+  -DThorin_DIR=$HOME/repos/upstream-anydsl/thorin/build/share/anydsl/cmake # Path to Thorin CMake: May need to change this on your machine
 
 # Build
 echo "Building..."
