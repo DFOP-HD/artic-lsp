@@ -95,11 +95,10 @@ void Server::setup_events() {
         if (in_workspace) {
             compile_files(workspace_.get_project_files());
         } else {
-            std::vector<File> files;
             File single{path};
+            log::debug("File not in workspace {}", single.path);
             single.text = params.textDocument.text; // content sent on open
-            files.emplace_back(std::move(single));
-            compile_files(files);
+            compile_files({std::move(single)});
         }
     });
     message_handler_.add<lsp::notifications::TextDocument_DidSave>([](lsp::notifications::TextDocument_DidSave::Params&& params) {
