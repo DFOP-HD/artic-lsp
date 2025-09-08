@@ -83,6 +83,7 @@ void Server::setup_events() {
             for (auto& w : workspace_.warnings()) {
                 send_message(w, lsp::MessageType::Warning);
             }
+            publish_config_diagnostics();
         } else {
             send_message("No workspace root provided in initialize request", lsp::MessageType::Error);
         }
@@ -474,7 +475,33 @@ void Server::reload_workspace(const std::string& active_file) {
         send_message(w, lsp::MessageType::Warning);
     }
 
+    publish_config_diagnostics();
     compile_files(workspace_.get_project_files());
+}
+
+void Server::publish_config_diagnostics() {
+    // Build diagnostics for the config files themselves (no precise ranges yet; whole document range 0,0-0,0)
+    auto makeDiag = [](const std::string& msg, lsp::DiagnosticSeverity sev) {
+        lsp::Diagnostic d;
+        d.range = lsp::Range{ lsp::Position{0,0}, lsp::Position{0,0} };
+        d.message = msg;
+        d.severity = sev;
+        return d;
+    };
+    auto publish = [&](const std::string& path){
+        if (path.empty()) return;
+        std::vector<lsp::Diagnostic> diags;
+        for (auto& e : workspace_.errors()) diags.push_back(makeDiag(e, lsp::DiagnosticSeverity::Error));
+        for (auto& w : workspace_.warnings()) diags.push_back(makeDiag(w, lsp::DiagnosticSeverity::Warning));
+        message_handler_.sendNotification<lsp::notifications::TextDocument_PublishDiagnostics>(
+            lsp::notifications::TextDocument_PublishDiagnostics::Params {
+                .uri = lsp::FileUri::fromPath(path),
+                .diagnostics = diags
+            }
+        );
+    };
+    publish(workspace_config_path_);
+    publish(global_config_path_);
 }
 
 } // namespace artic::ls
