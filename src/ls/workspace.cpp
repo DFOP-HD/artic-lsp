@@ -107,7 +107,7 @@ WorkspaceConfig::LoadResult WorkspaceConfig::load(std::string_view workspace_roo
 
     auto try_collect = [&](const std::string& path, bool is_global){
         if (!path.empty() && std::filesystem::exists(path)) {
-            collect_projects_recursive(path, is_global, visited, project_map, default_project, result.errors, result.warnings);
+                collect_projects_recursive(path, is_global, visited, project_map, default_project, result.errors, result.warnings, nullptr);
         }
     };
     try_collect(global_config_path, true);
@@ -193,7 +193,8 @@ void WorkspaceConfig::collect_projects_recursive(const std::filesystem::path& pa
                                                  std::unordered_map<std::string, ProjectEntry>& out_projects,
                                                  std::optional<ProjectEntry>& default_project,
                                                  std::vector<std::string>& errors,
-                                                 std::vector<std::string>& warnings) {
+                                                 std::vector<std::string>& warnings,
+                                                 const std::vector<std::string>* only_projects) {
     auto norm = normalize_path(path);
     if (visited_configs.count(norm)) {
         warnings.push_back("Config include cycle detected: " + norm);
@@ -209,6 +210,11 @@ void WorkspaceConfig::collect_projects_recursive(const std::filesystem::path& pa
     const char* home = std::getenv("HOME");
 
     for (auto& p : doc->projects) {
+        if (only_projects && !only_projects->empty()) {
+            if (std::find(only_projects->begin(), only_projects->end(), p.name) == only_projects->end()) {
+                continue; // skip unrequested project
+            }
+        }
         if (p.root.empty()) p.root = base_dir.string();
         else if (p.root.starts_with("~")) {
             if (home) p.root = std::string(home) + p.root.substr(1);
@@ -234,7 +240,9 @@ void WorkspaceConfig::collect_projects_recursive(const std::filesystem::path& pa
         } else if (!inc_path.is_absolute()) {
             inc_path = base_dir / inc_path;
         }
-        collect_projects_recursive(inc_path, false, visited_configs, out_projects, default_project, errors, warnings);
+        const std::vector<std::string>* filter = nullptr;
+        if (!inc.projects.empty()) filter = &inc.projects; // restrict to listed projects only
+        collect_projects_recursive(inc_path, false, visited_configs, out_projects, default_project, errors, warnings, filter);
     }
 }
 

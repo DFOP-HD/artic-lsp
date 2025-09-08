@@ -74,7 +74,8 @@ private:
                                            std::unordered_map<std::string, ProjectEntry>& out_projects,
                                            std::optional<ProjectEntry>& default_project,
                                            std::vector<std::string>& errors,
-                                           std::vector<std::string>& warnings);
+                                           std::vector<std::string>& warnings,
+                                           const std::vector<std::string>* only_projects = nullptr);
     static void merge_project(ProjectEntry&& p,
                               std::unordered_map<std::string, ProjectEntry>& out_projects,
                               std::vector<std::string>& warnings);
