@@ -44,14 +44,37 @@ void Server::setup_events() {
         if (!params.rootUri.isNull()) {
             workspace_root_ = params.rootUri.value().path();
             log::debug("Workspace root: {}", workspace_root_);
-            
-            // Discover project files
-            workspace_.load_from_config(workspace_root_);
+            // Extract initializationOptions (workspace/global config paths)
+            std::string workspace_cfg;
+            std::string global_cfg;
+#ifdef ENABLE_JSON
+            if (params.initializationOptions.has_value()) {
+                const auto& any = params.initializationOptions.value();
+                if (any.isObject()) {
+                    const auto& obj = any.object();
+                    if (auto it = obj.find("workspaceConfig"); it != obj.end() && it->second.isString()) {
+                        workspace_cfg = it->second.string();
+                    }
+                    if (auto it = obj.find("globalConfig"); it != obj.end() && it->second.isString()) {
+                        global_cfg = it->second.string();
+                    }
+                }
+            }
+#endif
+            workspace_.load_from_config(workspace_root_, workspace_cfg, global_cfg, {});
+            if (!workspace_.errors().empty()) {
+                for (auto& e : workspace_.errors()) {
+                    send_message(e, lsp::MessageType::Error);
+                }
+            }
+            for (auto& w : workspace_.warnings()) {
+                send_message(w, lsp::MessageType::Warning);
+            }
         } else {
             send_message("No workspace root provided in initialize request", lsp::MessageType::Error);
         }
 
-        compile_files(workspace_.get_project_files());
+    compile_files(workspace_.get_project_files());
         
         return lsp::requests::Initialize::Result {
             .capabilities = lsp::ServerCapabilities{

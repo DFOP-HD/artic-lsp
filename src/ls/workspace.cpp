@@ -7,6 +7,8 @@
 #include <fnmatch.h>
 #include <iostream>
 #include <vector>
+#include <unordered_map>
+#include <unordered_set>
 
 #ifdef ENABLE_JSON
 #include <nlohmann/json.hpp>
@@ -50,147 +52,252 @@ void Workspace::handle_file_changed(std::string_view file_path){
     }
 }
 
-void Workspace::load_from_config(std::string_view workspace_root) {
-    // Load workspace config
-    auto file_list = WorkspaceConfig::evaluate_config_file(workspace_root);
-    if (file_list) {
-        project_files_.clear();
-        for (const auto& file_path : *file_list) {
-            project_files_.emplace_back(file_path);
-        }
-        log::debug("Loaded {} files into workspace.", project_files_.size());
-    } else {
-        log::debug("Could not find workspace configuration. Please create artic.json in your root workspace directory and restart the language server.");
-    }
+void Workspace::load_from_config(std::string_view workspace_root,
+                                 const std::string& workspace_config_path,
+                                 const std::string& global_config_path,
+                                 const std::string& active_file) {
+    project_files_.clear();
+    project_defs_.clear();
+    last_errors_.clear();
+    last_warnings_.clear();
 
-    // Read file contents
-    for (auto& file : project_files_) {
+    auto load_result = WorkspaceConfig::load(workspace_root, workspace_config_path, global_config_path);
+    project_defs_ = load_result.projects;
+    last_errors_ = load_result.errors;
+    last_warnings_ = load_result.warnings;
+
+    auto resolved = WorkspaceConfig::resolve_files(project_defs_, active_file);
+    // append structural errors
+    last_errors_.insert(last_errors_.end(), resolved.errors.begin(), resolved.errors.end());
+    last_warnings_.insert(last_warnings_.end(), resolved.warnings.begin(), resolved.warnings.end());
+
+    for (auto& f : resolved.files) {
+        File file{f};
         file.read();
-        log::debug("Read file '{}'", file.path);
+        project_files_.push_back(std::move(file));
     }
+    log::debug("Workspace loaded with {} files, {} errors, {} warnings.", project_files_.size(), last_errors_.size(), last_warnings_.size());
 }
 
 // WorkspaceConfig ----------------------------------------------------------------------
 
-std::optional<std::vector<std::string>> WorkspaceConfig::evaluate_config_file(std::string_view workspace_root) {
-    static_assert(ENABLE_JSON, "JSON support not enabled, cannot parse workspace config (artic.json)");
+// ---------------- New Config Parsing ----------------
 
-    std::string config_path = std::string(workspace_root) + "/artic.json";
-
-    if (!std::filesystem::exists(config_path)) {
-        // No config file, use defaults
-        return {};
+namespace {
+    std::string normalize_path(const std::filesystem::path& p) {
+        try { return std::filesystem::weakly_canonical(p).string(); }
+        catch(...) { return std::filesystem::absolute(p).string(); }
     }
 
-    WorkspaceConfig config;
+    bool is_glob(const std::string& s) {
+        return s.find('*') != std::string::npos || s.find('?') != std::string::npos;
+    }
 
+    bool match_pattern(const std::string& pattern, const std::filesystem::path& test) {
+        auto fname = test.filename().string();
+        return fnmatch(pattern.c_str(), fname.c_str(), 0) == 0;
+    }
+}
+
+WorkspaceConfig::LoadResult WorkspaceConfig::load(std::string_view workspace_root,
+                                                  const std::string& workspace_config_path,
+                                                  const std::string& global_config_path) {
+    LoadResult result;
+    std::unordered_map<std::string, ProjectEntry> project_map;
+    std::optional<ProjectEntry> default_project;
+    std::unordered_set<std::string> visited;
+
+    auto try_collect = [&](const std::string& path, bool is_global){
+        if (!path.empty() && std::filesystem::exists(path)) {
+            collect_projects_recursive(path, is_global, visited, project_map, default_project, result.errors, result.warnings);
+        }
+    };
+    try_collect(global_config_path, true);
+    try_collect(workspace_config_path, false);
+
+    for (auto& kv : project_map) {
+        result.projects.push_back(std::move(kv.second));
+    }
+    if (default_project) {
+        result.projects.push_back(*default_project);
+    }
+    return result;
+}
+
+std::optional<RawConfigDocument> WorkspaceConfig::parse_file(const std::filesystem::path& path,
+                                                             std::vector<std::string>& errors,
+                                                             std::vector<std::string>& warnings) {
+#ifndef ENABLE_JSON
+    errors.push_back("Server built without JSON support; cannot parse config: " + path.string());
+    return std::nullopt;
+#else
+    if (!std::filesystem::exists(path)) {
+        errors.push_back("Config file does not exist: " + path.string());
+        return std::nullopt;
+    }
     try {
-        std::ifstream file(config_path);
-        nlohmann::json json;
-        file >> json;
-        
-        if (json.contains("include")) {
-            config.include_patterns = json["include"].get<std::vector<std::string>>();
+        std::ifstream is(path);
+        nlohmann::json j; is >> j;
+        RawConfigDocument doc;
+        if (!j.contains("artic-config")) {
+            errors.push_back("Missing artic-config field in " + path.string());
+            return std::nullopt;
         }
-        
-        if (json.contains("exclude")) {
-            config.exclude_patterns = json["exclude"].get<std::vector<std::string>>();
+        doc.version = j["artic-config"].get<std::string>();
+        if (doc.version != "1.0") {
+            warnings.push_back("Unsupported artic-config version in " + path.string());
         }
-        
-        if (json.contains("files")) {
-            config.explicit_files = json["files"].get<std::vector<std::string>>();
-        }
-        
-        config.workspace_root = workspace_root;
-        
-        std::clog << "Loaded project configuration from " << config_path << std::endl;
-        std::clog << "  Include patterns: " << config.include_patterns.size() << std::endl;
-        std::clog << "  Exclude patterns: " << config.exclude_patterns.size() << std::endl;
-        std::clog << "  Explicit files: " << config.explicit_files.size() << std::endl;
-        
-    } catch (const std::exception& e) {
-        std::cerr << "Error parsing " << config_path << ": " << e.what() << std::endl;
-        return {};
-    }
-
-    return config.get_all_included_files();
-}
-    
-std::vector<std::string> WorkspaceConfig::get_all_included_files() const {
-    std::vector<std::string> files;
-    
-    // Add explicit files first
-    for (const auto& file : explicit_files) {
-        std::string full_path;
-        if (std::filesystem::path(file).is_absolute()) {
-            full_path = file;
-        } else {
-            full_path = workspace_root + "/" + file;
-        }
-        files.push_back(full_path);
-    }
-    
-    // Add files from include patterns
-    auto pattern_files = expand_include_patterns();
-    files.insert(files.end(), pattern_files.begin(), pattern_files.end());
-
-
-    auto end = files.end();
-    std::sort(files.begin(), end);
-    end = std::unique(files.begin(), end);
-    end = std::remove_if(files.begin(), end, [this](const std::string& file) {
-        return should_exclude_file(file);
-    });
-    files.erase( end, files.end());
-    return files;
-}
-
-bool WorkspaceConfig::should_exclude_file(std::string_view file_path) const{
-    for (const auto& pattern : exclude_patterns) {
-        // Simple pattern matching - can be enhanced
-        if (file_path.find(pattern) != std::string::npos) {
-            return true;
-        }
-        
-        // Also check filename against pattern
-        std::filesystem::path path(file_path);
-        if (fnmatch(pattern.c_str(), path.filename().c_str(), 0) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-std::vector<std::string> WorkspaceConfig::expand_include_patterns() const{
-    std::vector<std::string> files;
-        
-    for (const auto& pattern : include_patterns) {
-        // For other patterns, do a simple directory scan with fnmatch
-        try {
-            std::filesystem::path pattern_path(pattern);
-            std::string dir = workspace_root;
-            std::string file_pattern = pattern;
-            
-            if (pattern_path.has_parent_path()) {
-                dir += "/" + pattern_path.parent_path().string();
-                file_pattern = pattern_path.filename().string();
+        if (j.contains("projects")) {
+            for (auto& pj : j["projects"]) {
+                ProjectEntry p;
+                if (!pj.contains("name")) { warnings.push_back("Project without name in " + path.string()); continue; }
+                p.name = pj["name"].get<std::string>();
+                if (pj.contains("folder") && !pj["folder"].is_null()) p.root = pj["folder"].get<std::string>();
+                if (pj.contains("dependencies")) p.dependencies = pj["dependencies"].get<std::vector<std::string>>();
+                if (pj.contains("files")) p.files = pj["files"].get<std::vector<std::string>>();
+                doc.projects.push_back(std::move(p));
             }
-            
-            if (std::filesystem::exists(dir)) {
-                for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-                    if (entry.is_regular_file()) {
-                        if (fnmatch(file_pattern.c_str(), entry.path().filename().c_str(), 0) == 0) {
-                            files.push_back(entry.path().string());
+        }
+        if (j.contains("default-project")) {
+            auto& dpj = j["default-project"];
+            ProjectEntry p; p.is_default = true; p.name = dpj.value("name", std::string("<default>"));
+            if (dpj.contains("folder") && !dpj["folder"].is_null()) p.root = dpj["folder"].get<std::string>();
+            if (dpj.contains("dependencies")) p.dependencies = dpj["dependencies"].get<std::vector<std::string>>();
+            if (dpj.contains("files")) p.files = dpj["files"].get<std::vector<std::string>>();
+            doc.default_project = std::move(p);
+        }
+        if (j.contains("include")) {
+            for (auto& incj : j["include"]) {
+                ConfigIncludeRef ref;
+                if (incj.contains("projects")) ref.projects = incj["projects"].get<std::vector<std::string>>();
+                if (incj.contains("path")) ref.path = incj["path"].get<std::string>();
+                if (incj.contains("prefer-global")) ref.prefer_global = incj["prefer-global"].get<bool>();
+                doc.includes.push_back(std::move(ref));
+            }
+        }
+        return doc;
+    } catch (const std::exception& e) {
+        errors.push_back(std::string("Failed to parse ") + path.string() + ": " + e.what());
+        return std::nullopt;
+    }
+#endif
+}
+
+void WorkspaceConfig::merge_project(ProjectEntry&& p,
+                                    std::unordered_map<std::string, ProjectEntry>& out_projects,
+                                    std::vector<std::string>& warnings) {
+    if (p.name.empty()) return;
+    if (out_projects.find(p.name) != out_projects.end()) {
+        warnings.push_back("Duplicate project definition for '" + p.name + "' ignored");
+        return;
+    }
+    out_projects.emplace(p.name, std::move(p));
+}
+
+void WorkspaceConfig::collect_projects_recursive(const std::filesystem::path& path,
+                                                 bool /*is_global_root*/,
+                                                 std::unordered_set<std::string>& visited_configs,
+                                                 std::unordered_map<std::string, ProjectEntry>& out_projects,
+                                                 std::optional<ProjectEntry>& default_project,
+                                                 std::vector<std::string>& errors,
+                                                 std::vector<std::string>& warnings) {
+    auto norm = normalize_path(path);
+    if (visited_configs.count(norm)) {
+        warnings.push_back("Config include cycle detected: " + norm);
+        return;
+    }
+    visited_configs.insert(norm);
+
+    auto doc = parse_file(path, errors, warnings);
+    if (!doc) return;
+
+    auto base_dir = path.parent_path();
+
+    for (auto& p : doc->projects) {
+        if (p.root.empty()) p.root = base_dir.string();
+        else if (p.root.starts_with("~")) {
+            const char* home = std::getenv("HOME");
+            if (home) p.root = std::filesystem::path(home) / p.root.substr(1);
+        } else if (!std::filesystem::path(p.root).is_absolute()) {
+            p.root = (base_dir / p.root).string();
+        }
+        p.root = normalize_path(p.root);
+        merge_project(std::move(p), out_projects, warnings);
+    }
+    if (doc->default_project) {
+        auto dp = *doc->default_project;
+        if (dp.root.empty()) dp.root = base_dir.string();
+        dp.root = normalize_path(dp.root);
+        if (!default_project) default_project = std::move(dp);
+    }
+    for (auto& inc : doc->includes) {
+        if (inc.path.empty()) continue;
+        std::filesystem::path inc_path = inc.path;
+        if (inc_path.string().starts_with("~")) {
+            const char* home = std::getenv("HOME");
+            if (home) inc_path = std::filesystem::path(home) / inc_path.string().substr(1);
+        } else if (!inc_path.is_absolute()) {
+            inc_path = base_dir / inc_path;
+        }
+        collect_projects_recursive(inc_path, false, visited_configs, out_projects, default_project, errors, warnings);
+    }
+}
+
+ProjectFileResolutionResult WorkspaceConfig::resolve_files(const std::vector<ProjectEntry>& projects,
+                                                          const std::string& active_file) {
+    ProjectFileResolutionResult res;
+    std::unordered_set<std::string> added;
+    for (const auto& p : projects) {
+        for (const auto& entry : p.files) {
+            bool is_exclusion = (!entry.empty() && entry[0] == '!');
+            std::string pattern = is_exclusion ? entry.substr(1) : entry;
+            std::filesystem::path pattern_path(pattern);
+            std::filesystem::path base_dir = p.root;
+            if (pattern_path.is_absolute()) base_dir = pattern_path.parent_path();
+            std::string file_pattern;
+            if (pattern_path.is_absolute()) file_pattern = pattern_path.filename().string();
+            else if (pattern_path.has_parent_path()) {
+                base_dir = base_dir / pattern_path.parent_path();
+                file_pattern = pattern_path.filename().string();
+            } else {
+                file_pattern = pattern_path.string();
+            }
+            if (is_glob(file_pattern)) {
+                if (std::filesystem::exists(base_dir)) {
+                    for (auto& dir_entry : std::filesystem::directory_iterator(base_dir)) {
+                        if (!dir_entry.is_regular_file()) continue;
+                        if (match_pattern(file_pattern, dir_entry.path())) {
+                            auto norm = normalize_path(dir_entry.path());
+                            if (is_exclusion) {
+                                added.erase(norm);
+                            } else {
+                                added.insert(norm);
+                            }
                         }
                     }
                 }
+            } else {
+                std::filesystem::path candidate = pattern_path.is_absolute() ? pattern_path : (p.root / pattern_path);
+                auto norm = normalize_path(candidate);
+                if (is_exclusion) {
+                    added.erase(norm);
+                } else if (std::filesystem::exists(candidate)) {
+                    added.insert(norm);
+                } else {
+                    res.warnings.push_back("File pattern did not match any file: " + candidate.string());
+                }
             }
-        } catch (const std::exception& e) {
-            std::cerr << "Error processing pattern " << pattern << ": " << e.what() << std::endl;
         }
     }
-    
-    return files;
+    if (!active_file.empty()) {
+        try {
+            auto norm = normalize_path(active_file);
+            added.insert(norm);
+        } catch(...) {}
+    }
+    for (auto& f : added) res.files.push_back(f);
+    std::sort(res.files.begin(), res.files.end());
+    return res;
 }
 
 } // namespace artic::ls
