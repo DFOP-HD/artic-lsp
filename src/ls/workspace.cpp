@@ -240,7 +240,64 @@ ProjectFileResolutionResult WorkspaceConfig::resolve_files(const std::vector<Pro
                                                           const std::string& active_file) {
     ProjectFileResolutionResult res;
     std::unordered_set<std::string> added;
+
+    // Build name -> project map for dependency lookups
+    std::unordered_map<std::string, const ProjectEntry*> project_by_name;
     for (const auto& p : projects) {
+        if (!p.name.empty()) project_by_name[p.name] = &p;
+    }
+
+    // Topological sort with cycle + missing dependency diagnostics
+    enum class Mark { Temporary, Permanent };
+    std::unordered_map<std::string, Mark> marks;
+    std::vector<const ProjectEntry*> ordered; ordered.reserve(projects.size());
+    std::vector<std::string> stack; stack.reserve(16);
+
+    std::function<void(const ProjectEntry&)> visit = [&](const ProjectEntry& proj) {
+        if (proj.name.empty()) return; // unnamed shouldn't have deps
+        auto itMark = marks.find(proj.name);
+        if (itMark != marks.end()) {
+            if (itMark->second == Mark::Temporary) {
+                // Cycle detected: stack contains path to proj.name
+                std::string cycle = proj.name;
+                // Build human-readable cycle chain
+                for (auto rit = stack.rbegin(); rit != stack.rend(); ++rit) {
+                    if (*rit == proj.name) break;
+                    cycle = *rit + " -> " + cycle;
+                }
+                res.warnings.push_back("Dependency cycle detected: " + cycle);
+            }
+            return; // already processed or currently processing
+        }
+        marks[proj.name] = Mark::Temporary;
+        stack.push_back(proj.name);
+        for (const auto& depName : proj.dependencies) {
+            if (depName == proj.name) {
+                res.warnings.push_back("Project '" + proj.name + "' lists itself as a dependency");
+                continue;
+            }
+            auto itDep = project_by_name.find(depName);
+            if (itDep == project_by_name.end()) {
+                res.warnings.push_back("Unknown dependency '" + depName + "' referenced by project '" + proj.name + "'");
+                continue;
+            }
+            visit(*itDep->second);
+        }
+        stack.pop_back();
+        marks[proj.name] = Mark::Permanent;
+        ordered.push_back(&proj);
+    };
+
+    // Visit in original order to preserve user intent; dependencies inserted before dependents
+    for (const auto& p : projects) {
+        if (!p.name.empty()) visit(p);
+        else {
+            // unnamed (default) projects may still have dependencies
+            ordered.push_back(&p);
+        }
+    }
+
+    auto process_project_files = [&](const ProjectEntry& p){
         for (const auto& entry : p.files) {
             bool is_exclusion = (!entry.empty() && entry[0] == '!');
             std::string pattern = is_exclusion ? entry.substr(1) : entry;
@@ -261,11 +318,7 @@ ProjectFileResolutionResult WorkspaceConfig::resolve_files(const std::vector<Pro
                         if (!dir_entry.is_regular_file()) continue;
                         if (match_pattern(file_pattern, dir_entry.path())) {
                             auto norm = normalize_path(dir_entry.path());
-                            if (is_exclusion) {
-                                added.erase(norm);
-                            } else {
-                                added.insert(norm);
-                            }
+                            if (is_exclusion) added.erase(norm); else added.insert(norm);
                         }
                     }
                 }
@@ -281,7 +334,12 @@ ProjectFileResolutionResult WorkspaceConfig::resolve_files(const std::vector<Pro
                 }
             }
         }
+    };
+
+    for (const auto* projPtr : ordered) {
+        if (projPtr) process_project_files(*projPtr);
     }
+
     if (!active_file.empty()) {
         try {
             auto norm = normalize_path(active_file);
