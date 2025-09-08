@@ -206,11 +206,13 @@ void WorkspaceConfig::collect_projects_recursive(const std::filesystem::path& pa
 
     auto base_dir = path.parent_path();
 
+    const char* home = std::getenv("HOME");
+
     for (auto& p : doc->projects) {
         if (p.root.empty()) p.root = base_dir.string();
         else if (p.root.starts_with("~")) {
-            const char* home = std::getenv("HOME");
-            if (home) p.root = std::filesystem::path(home) / p.root.substr(1);
+            if (home) p.root = std::string(home) + p.root.substr(1);
+            else errors.push_back("Cannot resolve home path '~': HOME env variable is not set");
         } else if (!std::filesystem::path(p.root).is_absolute()) {
             p.root = (base_dir / p.root).string();
         }
@@ -227,8 +229,8 @@ void WorkspaceConfig::collect_projects_recursive(const std::filesystem::path& pa
         if (inc.path.empty()) continue;
         std::filesystem::path inc_path = inc.path;
         if (inc_path.string().starts_with("~")) {
-            const char* home = std::getenv("HOME");
-            if (home) inc_path = std::filesystem::path(home) / inc_path.string().substr(1);
+            if (home) inc_path = std::string(home) + inc_path.string().substr(1);
+            else errors.push_back("Cannot resolve home path '~': HOME env variable is not set");
         } else if (!inc_path.is_absolute()) {
             inc_path = base_dir / inc_path;
         }
