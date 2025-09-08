@@ -64,13 +64,17 @@ void Server::setup_events() {
                     }
                 }
             }
-            if(workspace_cfg.empty()) {
+            // Persist config paths for later reloads
+            workspace_config_path_ = workspace_cfg;
+            global_config_path_ = global_cfg;
+
+            if(workspace_config_path_.empty()) {
                 send_message("No local artic.json workspace config", lsp::MessageType::Warning);
             }
-            if(global_cfg.empty()) {
+            if(global_config_path_.empty()) {
                 send_message("No global artic.json config", lsp::MessageType::Warning);
             }
-            workspace_.load_from_config(workspace_root_, workspace_cfg, global_cfg, {});
+            workspace_.load_from_config(workspace_root_, workspace_config_path_, global_config_path_, {});
             if (!workspace_.errors().empty()) {
                 for (auto& e : workspace_.errors()) {
                     send_message(e, lsp::MessageType::Error);
@@ -140,6 +144,11 @@ void Server::setup_events() {
     // Workspace ----------------------------------------------------------------------
 
     // lsp::notifications::Workspace_DidChangeConfiguration
+    message_handler_.add<lsp::notifications::Workspace_DidChangeConfiguration>([this](lsp::notifications::Workspace_DidChangeConfiguration::Params&& params) {
+        log::debug("LSP Workspace DidChangeConfiguration: triggering config reload");
+        // Optionally, could inspect params.settings to override paths.
+        reload_workspace();
+    });
     // lsp::notifications::Workspace_DidChangeWatchedFiles
     message_handler_.add<lsp::notifications::Workspace_DidChangeWatchedFiles>([this](lsp::notifications::Workspace_DidChangeWatchedFiles::Params&& params) {
         log::debug("LSP Workspace Did Change Watched Files");
@@ -157,6 +166,19 @@ void Server::setup_events() {
                     break;
                 case lsp::FileChangeType::MAX_VALUE:                    break;
             }
+            // If a config file changed, trigger full workspace reload once outside the loop
+        }
+        bool config_changed = false;
+        for (auto& c : params.changes) {
+            auto path = std::string(c.uri.path());
+            if ((!workspace_config_path_.empty() && path == workspace_config_path_) || (!global_config_path_.empty() && path == global_config_path_)) {
+                config_changed = true; break;
+            }
+        }
+        if (config_changed) {
+            log::debug("Configuration file change detected; reloading workspace");
+            reload_workspace();
+            return; // reload compiles; skip incremental compile below
         }
         // If the changed file is part of the workspace, compile the whole workspace; otherwise compile only that file
         if (!params.changes.empty()) {
@@ -178,6 +200,8 @@ void Server::setup_events() {
             compile_files(workspace_.get_project_files());
         }
     });
+
+    // Custom notification artic/reloadWorkspace omitted (framework lacks generic registration API here).
     // lsp::notifications::Workspace_DidChangeWorkspaceFolders
     // lsp::notifications::Workspace_DidCreateFiles
     // lsp::notifications::Workspace_DidDeleteFiles
@@ -426,6 +450,31 @@ void Server::compile_files(const std::vector<File>& files){
             }
         );
     }
+}
+
+void Server::reload_workspace(const std::string& active_file) {
+    log::debug("Reloading workspace configuration");
+    // Clear previous diagnostics for project files
+    for (const auto& f : workspace_.get_project_files()) {
+        message_handler_.sendNotification<lsp::notifications::TextDocument_PublishDiagnostics>(
+            lsp::notifications::TextDocument_PublishDiagnostics::Params {
+                .uri = lsp::FileUri::fromPath(f.path),
+                .diagnostics = {}
+            }
+        );
+    }
+
+    workspace_.load_from_config(workspace_root_, workspace_config_path_, global_config_path_, active_file);
+    if (!workspace_.errors().empty()) {
+        for (auto& e : workspace_.errors()) {
+            send_message(e, lsp::MessageType::Error);
+        }
+    }
+    for (auto& w : workspace_.warnings()) {
+        send_message(w, lsp::MessageType::Warning);
+    }
+
+    compile_files(workspace_.get_project_files());
 }
 
 } // namespace artic::ls

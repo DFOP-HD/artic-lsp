@@ -32,10 +32,14 @@ public:
 private:
     bool running_;
     std::string workspace_root_;
+    std::string workspace_config_path_;
+    std::string global_config_path_;
     
     // Project management
     Workspace workspace_;
     std::unique_ptr<compiler::CompileResult> last_compilation_result_;
+
+    void reload_workspace(const std::string& active_file = {});
 };
 
 } // namespace artic::ls

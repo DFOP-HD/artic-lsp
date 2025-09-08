@@ -10,9 +10,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#ifdef ENABLE_JSON
 #include <nlohmann/json.hpp>
-#endif
 
 namespace artic::ls {
 
@@ -127,10 +125,6 @@ WorkspaceConfig::LoadResult WorkspaceConfig::load(std::string_view workspace_roo
 std::optional<RawConfigDocument> WorkspaceConfig::parse_file(const std::filesystem::path& path,
                                                              std::vector<std::string>& errors,
                                                              std::vector<std::string>& warnings) {
-#ifndef ENABLE_JSON
-    errors.push_back("Server built without JSON support; cannot parse config: " + path.string());
-    return std::nullopt;
-#else
     if (!std::filesystem::exists(path)) {
         errors.push_back("Config file does not exist: " + path.string());
         return std::nullopt;
@@ -180,7 +174,6 @@ std::optional<RawConfigDocument> WorkspaceConfig::parse_file(const std::filesyst
         errors.push_back(std::string("Failed to parse ") + path.string() + ": " + e.what());
         return std::nullopt;
     }
-#endif
 }
 
 void WorkspaceConfig::merge_project(ProjectEntry&& p,
