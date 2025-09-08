@@ -74,21 +74,14 @@ void Server::setup_events() {
             if(global_config_path_.empty()) {
                 send_message("No global artic.json config", lsp::MessageType::Warning);
             }
-            workspace_.load_from_config(workspace_root_, workspace_config_path_, global_config_path_, {});
-            if (!workspace_.errors().empty()) {
-                for (auto& e : workspace_.errors()) {
-                    send_message(e, lsp::MessageType::Error);
-                }
-            }
-            for (auto& w : workspace_.warnings()) {
-                send_message(w, lsp::MessageType::Warning);
-            }
-            publish_config_diagnostics();
+        workspace_.load_from_config(workspace_root_, workspace_config_path_, global_config_path_, {});
+        // Defer publishing diagnostics & compiling until after Initialized to ensure client is ready.
+        pending_initial_config_diags_ = true;
+        pending_initial_compile_ = true;
         } else {
             send_message("No workspace root provided in initialize request", lsp::MessageType::Error);
         }
-
-    compile_files(workspace_.get_project_files());
+    // Removed immediate compile; handled after Initialized notification.
         
         return lsp::requests::Initialize::Result {
             .capabilities = lsp::ServerCapabilities{
@@ -203,6 +196,18 @@ void Server::setup_events() {
     });
 
     // Custom notification artic/reloadWorkspace omitted (framework lacks generic registration API here).
+    // Initialized notification: now safe to publish initial diagnostics & compile
+    message_handler_.add<lsp::notifications::Initialized>([this](lsp::notifications::Initialized::Params&&){
+        log::debug("Received Initialized notification");
+        if (pending_initial_config_diags_) {
+            publish_config_diagnostics();
+            pending_initial_config_diags_ = false;
+        }
+        if (pending_initial_compile_) {
+            compile_files(workspace_.get_project_files());
+            pending_initial_compile_ = false;
+        }
+    });
     // lsp::notifications::Workspace_DidChangeWorkspaceFolders
     // lsp::notifications::Workspace_DidCreateFiles
     // lsp::notifications::Workspace_DidDeleteFiles

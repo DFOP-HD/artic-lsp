@@ -34,6 +34,8 @@ private:
     std::string workspace_root_;
     std::string workspace_config_path_;
     std::string global_config_path_;
+    bool pending_initial_config_diags_ = false;
+    bool pending_initial_compile_ = false;
     
     // Project management
     Workspace workspace_;
