@@ -8,6 +8,11 @@
 #include <cctype>
 
 #include "artic/ls/crash.h"
+#include "lsp/types.h"
+
+#ifndef ENABLE_JSON
+#error("JSON support is required")
+#endif
 
 
 namespace artic::ls {
@@ -47,7 +52,6 @@ void Server::setup_events() {
             // Extract initializationOptions (workspace/global config paths)
             std::string workspace_cfg;
             std::string global_cfg;
-#ifdef ENABLE_JSON
             if (params.initializationOptions.has_value()) {
                 const auto& any = params.initializationOptions.value();
                 if (any.isObject()) {
@@ -60,7 +64,12 @@ void Server::setup_events() {
                     }
                 }
             }
-#endif
+            if(workspace_cfg.empty()) {
+                send_message("No local artic.json workspace config", lsp::MessageType::Warning);
+            }
+            if(global_cfg.empty()) {
+                send_message("No global artic.json config", lsp::MessageType::Warning);
+            }
             workspace_.load_from_config(workspace_root_, workspace_cfg, global_cfg, {});
             if (!workspace_.errors().empty()) {
                 for (auto& e : workspace_.errors()) {

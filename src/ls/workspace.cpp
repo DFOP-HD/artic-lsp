@@ -150,7 +150,7 @@ std::optional<RawConfigDocument> WorkspaceConfig::parse_file(const std::filesyst
         if (j.contains("projects")) {
             for (auto& pj : j["projects"]) {
                 ProjectEntry p;
-                if (!pj.contains("name")) { warnings.push_back("Project without name in " + path.string()); continue; }
+                if (!pj.contains("name")) { warnings.push_back("Project without name in " + path.string() + pj.dump()); continue; }
                 p.name = pj["name"].get<std::string>();
                 if (pj.contains("folder") && !pj["folder"].is_null()) p.root = pj["folder"].get<std::string>();
                 if (pj.contains("dependencies")) p.dependencies = pj["dependencies"].get<std::vector<std::string>>();
