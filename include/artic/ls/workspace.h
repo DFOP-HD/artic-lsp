@@ -9,15 +9,13 @@
 
 namespace artic::ls {
 
-using FilePath = std::filesystem::path;
-
 struct File {
-    FilePath path;
+    std::filesystem::path path;
     std::optional<std::string> text;
 
     void read();
 
-    explicit File(FilePath path) 
+    explicit File(std::filesystem::path path) 
         : path(std::move(path)), text(std::nullopt) 
     {}
 };
@@ -30,12 +28,12 @@ struct Project {
     Origin     origin;
 
     std::vector<File> files;
-    std::vector<Project*> dependencies;
+    std::vector<std::shared_ptr<Project>> dependencies;
 };
 
 struct WorkspaceConfig {
-    std::optional<Project> default_project;
-    std::vector<Project>   projects;
+    std::optional<std::shared_ptr<Project>> default_project;
+    std::vector<std::shared_ptr<Project>>   all_projects;
 
     struct Log {
         std::vector<std::string> errors;
@@ -47,15 +45,15 @@ struct WorkspaceConfig {
 
 class Workspace {
 public:
-    void load_from_config(const FilePath& workspace_root,
-                          const FilePath& workspace_config_path = {},
-                          const FilePath& global_config_path = {});
+    void load_from_config(const std::filesystem::path& workspace_root,
+                          const std::filesystem::path& workspace_config_path = {},
+                          const std::filesystem::path& global_config_path = {});
 
     void handle_file_changed(std::string_view file_path);
     void handle_file_created(std::string_view file_path){/* TODO */}
     void handle_file_deleted(std::string_view file_path){/* TODO */}
 
-    const std::vector<File>& get_project_files(const FilePath& active_file) const;
+    std::vector<File*> get_project_files(const std::filesystem::path& active_file) const;
 
 private:
     WorkspaceConfig workspace_config_;
