@@ -5,103 +5,101 @@
 #include <string>
 #include <optional>
 #include <string_view>
-#include <unordered_map>
-#include <unordered_set>
 #include <filesystem>
 
 namespace artic::ls {
 
-class File {
-public:
-    std::string path;
+using FilePath = std::filesystem::path;
+
+struct File {
+    FilePath path;
     std::optional<std::string> text;
 
     void read();
 
-    explicit File(std::string path) 
+    explicit File(FilePath path) 
         : path(std::move(path)), text(std::nullopt) 
     {}
 };
 
-struct ProjectEntry {
-    std::string name;
-    std::string root;                 // absolute directory
-    std::vector<std::string> files;   // patterns or explicit paths; may contain leading ! for exclusion
-    std::vector<std::string> dependencies;
-    bool is_default = false;
+struct Project {
+    using Identifier = std::string;
+    enum Origin { LocalDefinition, LocalInclude, GlobalDefinition, GlobalInclude };
+
+    Identifier name;
+    Origin     origin;
+
+    std::vector<File> files;
+    std::vector<Project*> dependencies;
 };
 
-struct ConfigIncludeRef {
-    std::vector<std::string> projects; // empty => all
-    std::string path;                  // path to another artic.json
-    bool prefer_global = false;        // reserved
-};
+struct WorkspaceConfig {
+    std::optional<Project> default_project;
+    std::vector<Project>   projects;
 
-struct RawConfigDocument {
-    std::string version;
-    std::vector<ProjectEntry> projects;
-    std::optional<ProjectEntry> default_project;
-    std::vector<ConfigIncludeRef> includes;
-};
-
-struct ProjectFileResolutionResult {
-    std::vector<std::string> files; // absolute, deduped
-    std::vector<std::string> errors;
-    std::vector<std::string> warnings;
-};
-
-class WorkspaceConfig {
-public:
-    struct LoadResult {
-        std::vector<ProjectEntry> projects;
+    struct Log {
         std::vector<std::string> errors;
         std::vector<std::string> warnings;
-    };
-
-    static LoadResult load(std::string_view workspace_root,
-                           const std::string& workspace_config_path,
-                           const std::string& global_config_path);
-
-    static ProjectFileResolutionResult resolve_files(const std::vector<ProjectEntry>& projects,
-                                                     const std::string& active_file = "");
-private:
-    static std::optional<RawConfigDocument> parse_file(const std::filesystem::path& path,
-                                                       std::vector<std::string>& errors,
-                                                       std::vector<std::string>& warnings);
-    static void collect_projects_recursive(const std::filesystem::path& path,
-                                           bool is_global_root,
-                                           std::unordered_set<std::string>& visited_configs,
-                                           std::unordered_map<std::string, ProjectEntry>& out_projects,
-                                           std::optional<ProjectEntry>& default_project,
-                                           std::vector<std::string>& errors,
-                                           std::vector<std::string>& warnings,
-                                           const std::vector<std::string>* only_projects = nullptr);
-    static void merge_project(ProjectEntry&& p,
-                              std::unordered_map<std::string, ProjectEntry>& out_projects,
-                              std::vector<std::string>& warnings);
+        void error(std::string msg) { errors.push_back(std::move(msg)); }
+        void warn (std::string msg) { warnings.push_back(std::move(msg)); }
+    } log;
 };
 
 class Workspace {
 public:
-    void load_from_config(std::string_view workspace_root,
-                          const std::string& workspace_config_path = {},
-                          const std::string& global_config_path = {},
-                          const std::string& active_file = {});
+    void load_from_config(const FilePath& workspace_root,
+                          const FilePath& workspace_config_path = {},
+                          const FilePath& global_config_path = {});
+
     void handle_file_changed(std::string_view file_path);
     void handle_file_created(std::string_view file_path){/* TODO */}
     void handle_file_deleted(std::string_view file_path){/* TODO */}
 
-    const std::vector<File>& get_project_files() const { return project_files_; }
-    const std::vector<ProjectEntry>& project_definitions() const { return project_defs_; }
-    const std::vector<std::string>& errors() const { return last_errors_; }
-    const std::vector<std::string>& warnings() const { return last_warnings_; }
+    const std::vector<File>& get_project_files(const FilePath& active_file) const;
 
 private:
-    std::vector<File> project_files_;
-    std::vector<ProjectEntry> project_defs_;
-    std::vector<std::string> last_errors_;
-    std::vector<std::string> last_warnings_;
+    WorkspaceConfig workspace_config_;
 };
+
+
+namespace config {
+
+
+struct ProjectDefinition {
+    // Unique project name.
+    // May be referenced by other projects.
+    Project::Identifier name;
+
+    // Path to the project root directory.
+    // FilePatterns are relative to this path.
+    std::string root_dir;
+    
+    // A pattern which can be used to include or exclude one or more files.
+    // Exclude patterns start with '!' character.
+    std::vector<std::string> file_patterns;
+
+    // Names of other projects that this project depends on.
+    // Projects will include all files from dependencies.
+    std::vector<Project::Identifier> dependencies;
+
+    // The default project will be used a file is edited that does not belong to any project.
+    bool is_default = false;
+};
+
+struct IncludeExternalProjects {
+    std::vector<Project::Identifier> req_projects; // filter (empty => all)
+    std::string path;            // path to another artic.json
+    bool prefer_global = false;  // use project from global config if available
+};
+
+struct ConfigDocument {
+    std::string version;
+    std::vector<ProjectDefinition>       projects;
+    std::optional<ProjectDefinition>     default_project;
+    std::vector<IncludeExternalProjects> includes;
+};
+
+} // namespace config
 
 } // namespace artic::ls
 

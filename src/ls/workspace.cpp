@@ -50,30 +50,181 @@ void Workspace::handle_file_changed(std::string_view file_path){
     }
 }
 
-void Workspace::load_from_config(std::string_view workspace_root,
-                                 const std::string& workspace_config_path,
-                                 const std::string& global_config_path,
-                                 const std::string& active_file) {
-    project_files_.clear();
-    project_defs_.clear();
-    last_errors_.clear();
-    last_warnings_.clear();
 
-    auto load_result = WorkspaceConfig::load(workspace_root, workspace_config_path, global_config_path);
-    project_defs_ = load_result.projects;
-    last_errors_ = load_result.errors;
-    last_warnings_ = load_result.warnings;
+// static void collect_projects_recursive(WorkspaceConfig& out) {
+//     auto norm = normalize_path(path);
+//     if (visited_configs.count(norm)) {
+//         warnings.push_back("Config include cycle detected: " + norm);
+//         return;
+//     }
+//     visited_configs.insert(norm);
 
-    auto resolved = WorkspaceConfig::resolve_files(project_defs_, active_file);
-    // append structural errors
-    last_errors_.insert(last_errors_.end(), resolved.errors.begin(), resolved.errors.end());
-    last_warnings_.insert(last_warnings_.end(), resolved.warnings.begin(), resolved.warnings.end());
+//     auto doc = parse_file(path, errors, warnings);
+//     if (!doc) return;
 
-    for (auto& f : resolved.files) {
-        File file{f};
-        file.read();
-        project_files_.push_back(std::move(file));
+//     auto base_dir = path.parent_path();
+
+//     const char* home = std::getenv("HOME");
+
+//     for (auto& p : doc->projects) {
+//         if (only_projects && !only_projects->empty()) {
+//             if (std::find(only_projects->begin(), only_projects->end(), p.name) == only_projects->end()) {
+//                 continue; // skip unrequested project
+//             }
+//         }
+//         if (p.root_dir.empty()) p.root_dir = base_dir.string();
+//         else if (p.root_dir.starts_with("~")) {
+//             if (home) p.root_dir = std::string(home) + p.root_dir.substr(1);
+//             else errors.push_back("Cannot resolve home path '~': HOME env variable is not set");
+//         } else if (!std::filesystem::path(p.root_dir).is_absolute()) {
+//             p.root_dir = (base_dir / p.root_dir).string();
+//         }
+//         p.root_dir = normalize_path(p.root_dir);
+//         merge_project(std::move(p), out_projects, warnings);
+//     }
+//     if (doc->default_project) {
+//         auto dp = *doc->default_project;
+//         if (dp.root_dir.empty()) dp.root_dir = base_dir.string();
+//         dp.root_dir = normalize_path(dp.root_dir);
+//         if (!default_project) default_project = std::move(dp);
+//     }
+//     for (auto& inc : doc->includes) {
+//         if (inc.path.empty()) continue;
+//         std::filesystem::path inc_path = inc.path;
+//         if (inc_path.string().starts_with("~")) {
+//             if (home) inc_path = std::string(home) + inc_path.string().substr(1);
+//             else errors.push_back("Cannot resolve home path '~': HOME env variable is not set");
+//         } else if (!inc_path.is_absolute()) {
+//             inc_path = base_dir / inc_path;
+//         }
+//         const std::vector<std::string>* filter = nullptr;
+//         if (!inc.projects.empty()) filter = &inc.projects; // restrict to listed projects only
+//         collect_projects_recursive(inc_path, false, visited_configs, out_projects, default_project, errors, warnings, filter);
+//     }
+// }
+
+namespace config {
+
+static std::optional<ConfigDocument> parse_config(const std::filesystem::path& path, WorkspaceConfig::Log& log) {
+    if (!std::filesystem::exists(path)) {
+        log.error("Config file does not exist: " + path.string());
+        return std::nullopt;
     }
+    try {
+        nlohmann::json j; 
+        std::ifstream is(path);
+        is >> j;
+
+        ConfigDocument doc;
+        // if (!j.contains("artic-config")) {
+        //     log.error(
+        //         "Missing artic-config header in " + path.string()
+        //         + "\nExample: " + nlohmann::json{{"artic-config", "1.0"}}.dump()
+        //     );
+        //     return std::nullopt;
+        // }
+        doc.version = j["artic-config"].get<std::string>();
+        if (doc.version != "1.0") {
+            log.warn("Unsupported artic-config version in " + path.string());
+        }
+
+        auto parse_project = [&](const nlohmann::json& pj){
+            ProjectDefinition p;
+            // if (!pj.contains("name")) { 
+            //     log.warn(
+            //         "Project without name in " + path.string()
+            //         + "\nExample: " + nlohmann::json{{"name", "my_project"}}.dump()
+            //     );
+            //     continue;
+            // }
+            p.name = pj["name"].get<std::string>();
+
+            p.root_dir =      pj.value<std::string>("folder", "");
+            p.dependencies =  pj.value<std::vector<std::string>>("dependencies", {});
+            p.file_patterns = pj.value<std::vector<std::string>>("files", {});
+            return p;
+        };
+
+        if (auto pj = j.find("projects"); pj != j.end()) {
+            for (auto& pj : *pj) {
+                doc.projects.push_back(parse_project(pj));
+            }
+        }
+        if (auto dpj = j.find("default-project"); dpj != j.end()) {
+            doc.default_project = parse_project(*dpj);
+        }
+        if (j.contains("include")) {
+            for (auto& incj : j["include"]) {
+                IncludeExternalProjects ref;
+                ref.req_projects      = incj.value<std::vector<std::string>>("projects", {});
+                ref.path          = incj.value<std::string>("path", "");
+                ref.prefer_global = incj.value<bool>("prefer-global", false);
+                doc.includes.push_back(std::move(ref));
+            }
+        }
+        return doc;
+    } catch (const std::exception& e) {
+        log.error(std::string("Failed to parse ") + path.string() + ": " + e.what());
+        return std::nullopt;
+    }
+}
+
+} // config
+
+std::filesystem::path to_absolute_path(const std::filesystem::path& base_dir, std::string_view path) {
+    std::filesystem::path abs_path;
+    if(path.starts_with("~")) {
+        static const char* home = std::getenv("HOME");
+        if(home) abs_path = std::filesystem::path(home) / path.substr(1);
+    }
+    if(!abs_path.is_absolute()){
+        abs_path = base_dir / abs_path;
+    }
+    return abs_path;
+}
+
+void Workspace::load_from_config(
+    const FilePath& workspace_root,
+    const FilePath& workspace_config_path,
+    const FilePath& global_config_path
+) {
+    workspace_config_ = WorkspaceConfig();
+    std::unordered_map<Project::Identifier, config::ProjectDefinition> project_map;
+    std::unordered_set<std::string> visited;
+
+    if(auto global_config = config::parse_config(global_config_path, workspace_config_.log)) {
+        for(auto& p : global_config->projects) {
+            if(project_map.contains(p.name)) {
+                workspace_config_.log.warn("Duplicate project definition for '" + p.name + "' ignored");
+                continue;
+            }
+            project_map.emplace(p.name, std::move(p));
+        }
+        std::vector<config::IncludeExternalProjects> include_queue = std::move(global_config->includes);
+        auto global_base_dir = std::filesystem::path(workspace_config_path).parent_path();
+    }
+
+
+    // project_files_.clear();
+    // project_defs_.clear();
+    // last_errors_.clear();
+    // last_warnings_.clear();
+
+    // auto load_result = WorkspaceConfig::load(workspace_root, workspace_config_path, global_config_path);
+    // project_defs_ = load_result.projects;
+    // last_errors_ = load_result.errors;
+    // last_warnings_ = load_result.warnings;
+
+    // auto resolved = WorkspaceConfig::resolve_files(project_defs_, active_file);
+    // // append structural errors
+    // last_errors_.insert(last_errors_.end(), resolved.errors.begin(), resolved.errors.end());
+    // last_warnings_.insert(last_warnings_.end(), resolved.warnings.begin(), resolved.warnings.end());
+
+    // for (auto& f : resolved.files) {
+    //     File file{f};
+    //     file.read();
+    //     project_files_.push_back(std::move(file));
+    // }
     log::debug("Workspace loaded with {} files, {} errors, {} warnings.", project_files_.size(), last_errors_.size(), last_warnings_.size());
 }
 
@@ -97,87 +248,8 @@ namespace {
     }
 }
 
-WorkspaceConfig::LoadResult WorkspaceConfig::load(std::string_view workspace_root,
-                                                  const std::string& workspace_config_path,
-                                                  const std::string& global_config_path) {
-    LoadResult result;
-    std::unordered_map<std::string, ProjectEntry> project_map;
-    std::optional<ProjectEntry> default_project;
-    std::unordered_set<std::string> visited;
-
-    auto try_collect = [&](const std::string& path, bool is_global){
-        if (!path.empty() && std::filesystem::exists(path)) {
-                collect_projects_recursive(path, is_global, visited, project_map, default_project, result.errors, result.warnings, nullptr);
-        }
-    };
-    try_collect(global_config_path, true);
-    try_collect(workspace_config_path, false);
-
-    for (auto& kv : project_map) {
-        result.projects.push_back(std::move(kv.second));
-    }
-    if (default_project) {
-        result.projects.push_back(*default_project);
-    }
-    return result;
-}
-
-std::optional<RawConfigDocument> WorkspaceConfig::parse_file(const std::filesystem::path& path,
-                                                             std::vector<std::string>& errors,
-                                                             std::vector<std::string>& warnings) {
-    if (!std::filesystem::exists(path)) {
-        errors.push_back("Config file does not exist: " + path.string());
-        return std::nullopt;
-    }
-    try {
-        std::ifstream is(path);
-        nlohmann::json j; is >> j;
-        RawConfigDocument doc;
-        if (!j.contains("artic-config")) {
-            errors.push_back("Missing artic-config field in " + path.string());
-            return std::nullopt;
-        }
-        doc.version = j["artic-config"].get<std::string>();
-        if (doc.version != "1.0") {
-            warnings.push_back("Unsupported artic-config version in " + path.string());
-        }
-        if (j.contains("projects")) {
-            for (auto& pj : j["projects"]) {
-                ProjectEntry p;
-                if (!pj.contains("name")) { warnings.push_back("Project without name in " + path.string() + pj.dump()); continue; }
-                p.name = pj["name"].get<std::string>();
-                if (pj.contains("folder") && !pj["folder"].is_null()) p.root = pj["folder"].get<std::string>();
-                if (pj.contains("dependencies")) p.dependencies = pj["dependencies"].get<std::vector<std::string>>();
-                if (pj.contains("files")) p.files = pj["files"].get<std::vector<std::string>>();
-                doc.projects.push_back(std::move(p));
-            }
-        }
-        if (j.contains("default-project")) {
-            auto& dpj = j["default-project"];
-            ProjectEntry p; p.is_default = true; p.name = dpj.value("name", std::string("<default>"));
-            if (dpj.contains("folder") && !dpj["folder"].is_null()) p.root = dpj["folder"].get<std::string>();
-            if (dpj.contains("dependencies")) p.dependencies = dpj["dependencies"].get<std::vector<std::string>>();
-            if (dpj.contains("files")) p.files = dpj["files"].get<std::vector<std::string>>();
-            doc.default_project = std::move(p);
-        }
-        if (j.contains("include")) {
-            for (auto& incj : j["include"]) {
-                ConfigIncludeRef ref;
-                if (incj.contains("projects")) ref.projects = incj["projects"].get<std::vector<std::string>>();
-                if (incj.contains("path")) ref.path = incj["path"].get<std::string>();
-                if (incj.contains("prefer-global")) ref.prefer_global = incj["prefer-global"].get<bool>();
-                doc.includes.push_back(std::move(ref));
-            }
-        }
-        return doc;
-    } catch (const std::exception& e) {
-        errors.push_back(std::string("Failed to parse ") + path.string() + ": " + e.what());
-        return std::nullopt;
-    }
-}
-
-void WorkspaceConfig::merge_project(ProjectEntry&& p,
-                                    std::unordered_map<std::string, ProjectEntry>& out_projects,
+void WorkspaceConfig::merge_project(ProjectDefinition&& p,
+                                    std::unordered_map<std::string, ProjectDefinition>& out_projects,
                                     std::vector<std::string>& warnings) {
     if (p.name.empty()) return;
     if (out_projects.find(p.name) != out_projects.end()) {
@@ -187,72 +259,13 @@ void WorkspaceConfig::merge_project(ProjectEntry&& p,
     out_projects.emplace(p.name, std::move(p));
 }
 
-void WorkspaceConfig::collect_projects_recursive(const std::filesystem::path& path,
-                                                 bool /*is_global_root*/,
-                                                 std::unordered_set<std::string>& visited_configs,
-                                                 std::unordered_map<std::string, ProjectEntry>& out_projects,
-                                                 std::optional<ProjectEntry>& default_project,
-                                                 std::vector<std::string>& errors,
-                                                 std::vector<std::string>& warnings,
-                                                 const std::vector<std::string>* only_projects) {
-    auto norm = normalize_path(path);
-    if (visited_configs.count(norm)) {
-        warnings.push_back("Config include cycle detected: " + norm);
-        return;
-    }
-    visited_configs.insert(norm);
-
-    auto doc = parse_file(path, errors, warnings);
-    if (!doc) return;
-
-    auto base_dir = path.parent_path();
-
-    const char* home = std::getenv("HOME");
-
-    for (auto& p : doc->projects) {
-        if (only_projects && !only_projects->empty()) {
-            if (std::find(only_projects->begin(), only_projects->end(), p.name) == only_projects->end()) {
-                continue; // skip unrequested project
-            }
-        }
-        if (p.root.empty()) p.root = base_dir.string();
-        else if (p.root.starts_with("~")) {
-            if (home) p.root = std::string(home) + p.root.substr(1);
-            else errors.push_back("Cannot resolve home path '~': HOME env variable is not set");
-        } else if (!std::filesystem::path(p.root).is_absolute()) {
-            p.root = (base_dir / p.root).string();
-        }
-        p.root = normalize_path(p.root);
-        merge_project(std::move(p), out_projects, warnings);
-    }
-    if (doc->default_project) {
-        auto dp = *doc->default_project;
-        if (dp.root.empty()) dp.root = base_dir.string();
-        dp.root = normalize_path(dp.root);
-        if (!default_project) default_project = std::move(dp);
-    }
-    for (auto& inc : doc->includes) {
-        if (inc.path.empty()) continue;
-        std::filesystem::path inc_path = inc.path;
-        if (inc_path.string().starts_with("~")) {
-            if (home) inc_path = std::string(home) + inc_path.string().substr(1);
-            else errors.push_back("Cannot resolve home path '~': HOME env variable is not set");
-        } else if (!inc_path.is_absolute()) {
-            inc_path = base_dir / inc_path;
-        }
-        const std::vector<std::string>* filter = nullptr;
-        if (!inc.projects.empty()) filter = &inc.projects; // restrict to listed projects only
-        collect_projects_recursive(inc_path, false, visited_configs, out_projects, default_project, errors, warnings, filter);
-    }
-}
-
-ProjectFileResolutionResult WorkspaceConfig::resolve_files(const std::vector<ProjectEntry>& projects,
+ConfigEvaluationResult WorkspaceConfig::resolve_files(const std::vector<ProjectDefinition>& projects,
                                                           const std::string& active_file) {
-    ProjectFileResolutionResult res;
+    ConfigEvaluationResult res;
     std::unordered_set<std::string> added;
 
     // Build name -> project map for dependency lookups
-    std::unordered_map<std::string, const ProjectEntry*> project_by_name;
+    std::unordered_map<std::string, const ProjectDefinition*> project_by_name;
     for (const auto& p : projects) {
         if (!p.name.empty()) project_by_name[p.name] = &p;
     }
@@ -260,10 +273,10 @@ ProjectFileResolutionResult WorkspaceConfig::resolve_files(const std::vector<Pro
     // Topological sort with cycle + missing dependency diagnostics
     enum class Mark { Temporary, Permanent };
     std::unordered_map<std::string, Mark> marks;
-    std::vector<const ProjectEntry*> ordered; ordered.reserve(projects.size());
+    std::vector<const ProjectDefinition*> ordered; ordered.reserve(projects.size());
     std::vector<std::string> stack; stack.reserve(16);
 
-    std::function<void(const ProjectEntry&)> visit = [&](const ProjectEntry& proj) {
+    std::function<void(const ProjectDefinition&)> visit = [&](const ProjectDefinition& proj) {
         if (proj.name.empty()) return; // unnamed shouldn't have deps
         auto itMark = marks.find(proj.name);
         if (itMark != marks.end()) {
@@ -307,7 +320,7 @@ ProjectFileResolutionResult WorkspaceConfig::resolve_files(const std::vector<Pro
         }
     }
 
-    auto process_project_files = [&](const ProjectEntry& p){
+    auto process_project_files = [&](const ProjectDefinition& p){
         for (const auto& entry : p.files) {
             bool is_exclusion = (!entry.empty() && entry[0] == '!');
             std::string pattern = is_exclusion ? entry.substr(1) : entry;
