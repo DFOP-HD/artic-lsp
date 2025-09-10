@@ -14,21 +14,32 @@
 
 namespace artic::ls {
 
-
 namespace config {
 
-static std::optional<ConfigDocument> parse_config(const std::filesystem::path& path, WorkspaceConfig::Log& log) {
-    if (!std::filesystem::exists(path)) {
-        log.error("Config file does not exist: " + path.string());
+static std::filesystem::path to_absolute_path(const std::filesystem::path& base_dir, std::string_view path) {
+    std::filesystem::path abs_path;
+    if(path.starts_with("~")) {
+        static const char* home = std::getenv("HOME");
+        if(home) abs_path = std::filesystem::path(home) / path.substr(1);
+    }
+    if(!abs_path.is_absolute()){
+        abs_path = base_dir / abs_path;
+    }
+    return abs_path;
+}
+
+static std::optional<ConfigDocument> parse_config(const std::filesystem::path& config_path, WorkspaceConfig::Log& log) {
+    if (!std::filesystem::exists(config_path)) {
+        log.error("Config file does not exist: " + config_path.string());
         return std::nullopt;
     }
     try {
         nlohmann::json j; 
-        std::ifstream is(path);
+        std::ifstream is(config_path);
         is >> j;
 
         ConfigDocument doc;
-        doc.path = path;
+        doc.path = config_path;
         // if (!j.contains("artic-config")) {
         //     log.error(
         //         "Missing artic-config header in " + path.string()
@@ -38,7 +49,7 @@ static std::optional<ConfigDocument> parse_config(const std::filesystem::path& p
         // }
         doc.version = j["artic-config"].get<std::string>();
         if (doc.version != "1.0") {
-            log.warn("Unsupported artic-config version in " + path.string());
+            log.warn("Unsupported artic-config version in " + config_path.string());
         }
 
         auto parse_project = [&](const nlohmann::json& pj){
@@ -55,7 +66,7 @@ static std::optional<ConfigDocument> parse_config(const std::filesystem::path& p
             p.root_dir =      pj.value<std::string>("folder", "");
             p.dependencies =  pj.value<std::vector<std::string>>("dependencies", {});
             p.file_patterns = pj.value<std::vector<std::string>>("files", {});
-            p.origin = path;
+            p.origin = config_path;
             return p;
         };
 
@@ -70,19 +81,18 @@ static std::optional<ConfigDocument> parse_config(const std::filesystem::path& p
         if (j.contains("include-projects")) {
             bool missing_global = true;
             for (auto& incj : j["include-projects"]) {
-                IncludeConfig include;
                 auto path = incj.get<std::string>();
                 if(missing_global && path == "<global>"){
                     missing_global = false;
                     continue;
                 }
+                IncludeConfig include;
                 if(path.ends_with('?')){
-                    include.path = path.substr(0, path.size()-1);
+                    path = path.substr(0, path.size()-1);
                     include.is_optional = true;
-                } else {
-                    include.path = std::move(path);
-                    include.is_optional = false;
-                }
+                } 
+                include.path = to_absolute_path(config_path, path);
+
                 doc.includes.push_back(std::move(include));
             }
             if(missing_global) {
@@ -91,7 +101,7 @@ static std::optional<ConfigDocument> parse_config(const std::filesystem::path& p
         }
         return doc;
     } catch (const std::exception& e) {
-        log.error(std::string("Failed to parse ") + path.string() + ": " + e.what());
+        log.error(std::string("Failed to parse ") + config_path.string() + ": " + e.what());
         return std::nullopt;
     }
 }
@@ -135,17 +145,7 @@ std::vector<File*> Workspace::get_project_files(const std::filesystem::path& act
     return {};
 }
 
-static std::filesystem::path to_absolute_path(const std::filesystem::path& base_dir, std::string_view path) {
-    std::filesystem::path abs_path;
-    if(path.starts_with("~")) {
-        static const char* home = std::getenv("HOME");
-        if(home) abs_path = std::filesystem::path(home) / path.substr(1);
-    }
-    if(!abs_path.is_absolute()){
-        abs_path = base_dir / abs_path;
-    }
-    return abs_path;
-}
+
 
 
 
