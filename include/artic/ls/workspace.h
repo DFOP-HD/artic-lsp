@@ -25,7 +25,6 @@ struct Project {
     enum Origin { LocalDefinition, LocalInclude, GlobalDefinition, GlobalInclude };
 
     Identifier name;
-    Origin     origin;
 
     std::vector<File> files;
     std::vector<std::shared_ptr<Project>> dependencies;
@@ -55,7 +54,7 @@ public:
 
     std::vector<File*> get_project_files(const std::filesystem::path& active_file) const;
 
-private:
+// private:
     WorkspaceConfig workspace_config_;
 };
 
@@ -80,21 +79,21 @@ struct ProjectDefinition {
     // Projects will include all files from dependencies.
     std::vector<Project::Identifier> dependencies;
 
-    // The default project will be used a file is edited that does not belong to any project.
-    bool is_default = false;
+    // config where project was first defined
+    std::filesystem::path origin;
 };
 
-struct IncludeExternalProjects {
-    std::vector<Project::Identifier> req_projects; // filter (empty => all)
-    std::string path;            // path to another artic.json
-    bool prefer_global = false;  // use project from global config if available
+struct IncludeConfig {
+    std::string path; // path to another artic.json
+    bool is_optional;
 };
 
 struct ConfigDocument {
     std::string version;
     std::vector<ProjectDefinition>       projects;
     std::optional<ProjectDefinition>     default_project;
-    std::vector<IncludeExternalProjects> includes;
+    std::vector<IncludeConfig> includes;
+    std::filesystem::path                path;
 };
 
 } // namespace config

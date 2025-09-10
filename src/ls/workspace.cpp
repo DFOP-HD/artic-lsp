@@ -28,6 +28,7 @@ static std::optional<ConfigDocument> parse_config(const std::filesystem::path& p
         is >> j;
 
         ConfigDocument doc;
+        doc.path = path;
         // if (!j.contains("artic-config")) {
         //     log.error(
         //         "Missing artic-config header in " + path.string()
@@ -54,6 +55,7 @@ static std::optional<ConfigDocument> parse_config(const std::filesystem::path& p
             p.root_dir =      pj.value<std::string>("folder", "");
             p.dependencies =  pj.value<std::vector<std::string>>("dependencies", {});
             p.file_patterns = pj.value<std::vector<std::string>>("files", {});
+            p.origin = path;
             return p;
         };
 
@@ -65,13 +67,26 @@ static std::optional<ConfigDocument> parse_config(const std::filesystem::path& p
         if (auto dpj = j.find("default-project"); dpj != j.end()) {
             doc.default_project = parse_project(*dpj);
         }
-        if (j.contains("include")) {
-            for (auto& incj : j["include"]) {
-                IncludeExternalProjects ref;
-                ref.req_projects      = incj.value<std::vector<std::string>>("projects", {});
-                ref.path          = incj.value<std::string>("path", "");
-                ref.prefer_global = incj.value<bool>("prefer-global", false);
-                doc.includes.push_back(std::move(ref));
+        if (j.contains("include-projects")) {
+            bool missing_global = true;
+            for (auto& incj : j["include-projects"]) {
+                IncludeConfig include;
+                auto path = incj.get<std::string>();
+                if(missing_global && path == "<global>"){
+                    missing_global = false;
+                    continue;
+                }
+                if(path.ends_with('?')){
+                    include.path = path.substr(0, path.size()-1);
+                    include.is_optional = true;
+                } else {
+                    include.path = std::move(path);
+                    include.is_optional = false;
+                }
+                doc.includes.push_back(std::move(include));
+            }
+            if(missing_global) {
+                log.warn("'include-projects' should contain '<global>' to improve readability as global projects are implicitly included");
             }
         }
         return doc;
@@ -132,23 +147,121 @@ static std::filesystem::path to_absolute_path(const std::filesystem::path& base_
     return abs_path;
 }
 
+
+
+static std::vector<File> evaluate_file_patterns(const std::vector<std::string>& patterns) {
+    // TODO
+    return {};
+}
+
+struct CollectProjectsData {
+    WorkspaceConfig::Log& log;
+    std::map<Project::Identifier, config::ProjectDefinition>& projects;
+    std::unordered_set<std::filesystem::path> visited_configs;
+};
+
+static void collect_projects_recursive(const config::ConfigDocument& config, CollectProjectsData& data) {
+    if(data.visited_configs.contains(config.path)) return;
+    data.visited_configs.insert(config.path);
+
+    // Register Projects
+    for (auto& proj : config.projects) {
+        auto& val = data.projects[proj.name];
+        if(val.origin != proj.origin) {
+            data.log.warn("ignoring duplicate definition of " + proj.name + " in " + proj.origin.string());
+            continue;
+        }
+        val = proj; 
+    }
+    // Recurse included configs
+    for (auto& include : config.includes) {
+        if (!std::filesystem::exists(include.path)) {
+            if(include.is_optional) continue;
+        } 
+        if(auto include_config = config::parse_config(include.path, data.log)) {
+            collect_projects_recursive(include_config.value(), data);
+        }
+    }
+}
+
+static std::shared_ptr<Project> convert(const config::ProjectDefinition& proj){
+    auto project = std::make_shared<Project>();
+    project->name = proj.name;
+    project->files = evaluate_file_patterns(proj.file_patterns);
+    return project;
+}
+
 void Workspace::load_from_config(
     const std::filesystem::path& workspace_root,
     const std::filesystem::path& workspace_config_path,
     const std::filesystem::path& global_config_path
 ) {
     workspace_config_ = WorkspaceConfig();
+    auto& log = workspace_config_.log;
 
-    if(auto global_config = config::parse_config(global_config_path, workspace_config_.log)) {
-        // TODO recursive load of included configs
+    std::map<Project::Identifier, config::ProjectDefinition> project_defs;
+    std::optional<config::ProjectDefinition> default_project;
+    CollectProjectsData data {.log = log, .projects=project_defs };
+
+    // Discover projects from global config recursively
+    if(auto global_config = config::parse_config(global_config_path, log)) {
+        collect_projects_recursive(global_config.value(), data);
+        if(auto& dp = global_config->default_project){
+            default_project = dp.value();
+        }
     }
 
-    if(auto local_config = config::parse_config(workspace_config_path, workspace_config_.log)) {
-        // TODO recursive load of included configs
+    // Discover projects from local config recursively
+    if(auto local_config = config::parse_config(workspace_config_path, log)) {
+        collect_projects_recursive(local_config.value(), data);
+        if(auto& dp = local_config->default_project){
+            default_project = dp.value();
+        }
     }
 
-    // resolve projects, dependencies, and file lists
-    // ...
+    struct IntermediateProject {
+        std::shared_ptr<Project> project;
+        std::vector<Project::Identifier> dependencies;
+    };
+
+    std::map<Project::Identifier, IntermediateProject> projects;
+
+    // convert project definitions to project instances
+    for (const auto& [id, def] : project_defs) {
+        projects[id] = {
+            .project = convert(def), 
+            .dependencies = std::move(def.dependencies)
+        };
+    }
+    
+    // resolve dependencies
+    for (auto& [id, p] : projects) {
+        for (auto& dep_id : p.dependencies) {
+            if(!projects.contains(dep_id)) {
+                log.error("failed to resolve dependency " + dep_id + " for project " + p.project->name);
+                continue;
+            }
+            auto& dep = projects.at(dep_id).project;
+            p.project->dependencies.push_back(dep);        
+        }
+
+        workspace_config_.all_projects.push_back(p.project);
+    }
+
+    // register default project
+    if(auto& dp = default_project){
+        auto project = convert(dp.value());
+        for (auto& dep_id : dp->dependencies) {
+            if(!projects.contains(dep_id)) {
+                log.error("failed to resolve dependency " + dep_id + " for project " + project->name);
+                continue;
+            }
+            auto& dep = projects.at(dep_id).project;
+            project->dependencies.push_back(dep);        
+        }
+
+        workspace_config_.default_project = project;
+    }
 }
 
 } // namespace artic::ls
