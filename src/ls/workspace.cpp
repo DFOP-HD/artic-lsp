@@ -147,13 +147,6 @@ std::vector<File*> Workspace::get_project_files(const std::filesystem::path& act
 
 
 
-
-
-static std::vector<File> evaluate_file_patterns(const std::vector<std::string>& patterns) {
-    // TODO
-    return {};
-}
-
 struct CollectProjectsData {
     WorkspaceConfig::Log& log;
     std::map<Project::Identifier, config::ProjectDefinition>& projects;
@@ -184,10 +177,22 @@ static void collect_projects_recursive(const config::ConfigDocument& config, Col
     }
 }
 
-static std::shared_ptr<Project> convert(const config::ProjectDefinition& proj){
+static std::shared_ptr<Project> convert(const config::ProjectDefinition& proj_def) {
     auto project = std::make_shared<Project>();
-    project->name = proj.name;
-    project->files = evaluate_file_patterns(proj.file_patterns);
+    project->name = proj_def.name;
+
+    // evaluate file patterns
+    std::vector<std::string> include_patterns;
+    std::vector<std::string> exclude_patterns;
+    for (const auto& pattern : proj_def.file_patterns) {
+        if (!pattern.empty() && pattern[0] == '!') {
+            exclude_patterns.push_back(pattern.substr(1));
+        } else {
+            include_patterns.push_back(pattern);
+        }
+    }
+
+
     return project;
 }
 
