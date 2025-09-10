@@ -86,7 +86,7 @@ struct ProjectDefinition {
     // config where project was first defined
     std::filesystem::path origin;
 
-    int depth;
+    int depth = 100;
 };
 
 struct IncludeConfig {

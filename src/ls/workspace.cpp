@@ -158,13 +158,19 @@ static void collect_projects_recursive(const config::ConfigDocument& config, Col
 
     // Register Projects
     for (const auto& proj : config.projects) {
-        auto& val = data.projects[proj.name];
-        if(val.origin != proj.origin) {
-            data.log.warn("ignoring duplicate definition of " + proj.name + " in " + proj.origin.string());
+        if(data.projects.contains(proj.name)) {
+            // already registered
+            auto& val = data.projects[proj.name];
+            if(val.origin == proj.origin) {
+                if(depth < val.depth) val.depth = depth;
+            } else {
+                data.log.warn("ignoring duplicate definition of " + proj.name + " in " + proj.origin.string());
+            }
             continue;
         }
-        val = proj;
-        val.depth = depth;
+
+        data.projects[proj.name] = proj;
+        data.projects[proj.name].depth = depth;
     }
     // Recurse included configs
     for (const auto& include : config.includes) {
