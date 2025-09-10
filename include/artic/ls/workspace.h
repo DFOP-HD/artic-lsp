@@ -6,8 +6,11 @@
 #include <optional>
 #include <string_view>
 #include <filesystem>
+#include <unordered_map>
 
 namespace artic::ls {
+
+struct Project;
 
 struct File {
     std::filesystem::path path;
@@ -26,13 +29,14 @@ struct Project {
 
     Identifier name;
 
-    std::vector<File> files;
+    std::vector<std::shared_ptr<File>> files;
     std::vector<std::shared_ptr<Project>> dependencies;
 };
 
 struct WorkspaceConfig {
     std::optional<std::shared_ptr<Project>> default_project;
     std::vector<std::shared_ptr<Project>>   all_projects;
+    std::unordered_map<std::filesystem::path, std::shared_ptr<File>> tracked_files;
 
     struct Log {
         std::vector<std::string> errors;
@@ -81,6 +85,8 @@ struct ProjectDefinition {
 
     // config where project was first defined
     std::filesystem::path origin;
+
+    int depth;
 };
 
 struct IncludeConfig {
