@@ -13,7 +13,33 @@
 
 #include <nlohmann/json.hpp>
 
-namespace artic::ls {
+namespace artic::ls::workspace {
+
+// File ----------------------------------------------------------------------
+
+static std::optional<std::string> read_file(const std::string& file) {
+    std::ifstream is(file);
+    if (!is)
+        return std::nullopt;
+    // Try/catch needed in case file is a directory (throws exception upon read)
+    try {
+        return std::make_optional(std::string(
+            std::istreambuf_iterator<char>(is),
+            std::istreambuf_iterator<char>()
+        ));
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+void File::read() {
+    text = read_file(path);
+    if (!text) {
+        log::error("Could not read file {}", path);
+    }
+}
+
+// Config --------------------------------------------------------------------
 
 namespace config {
 
@@ -29,7 +55,7 @@ static std::filesystem::path to_absolute_path(const std::filesystem::path& base_
     return abs_path;
 }
 
-static std::optional<ConfigDocument> parse_config(const std::filesystem::path& config_path, WorkspaceProjects::Log& log) {
+static std::optional<ConfigDocument> parse_config(const std::filesystem::path& config_path, WorkspaceConfigLog& log) {
     if (!std::filesystem::exists(config_path)) {
         log.error("Config file does not exist: " + config_path.string());
         return std::nullopt;
@@ -109,45 +135,10 @@ static std::optional<ConfigDocument> parse_config(const std::filesystem::path& c
 
 } // config
 
-// File ----------------------------------------------------------------------
-
-static std::optional<std::string> read_file(const std::string& file) {
-    std::ifstream is(file);
-    if (!is)
-        return std::nullopt;
-    // Try/catch needed in case file is a directory (throws exception upon read)
-    try {
-        return std::make_optional(std::string(
-            std::istreambuf_iterator<char>(is),
-            std::istreambuf_iterator<char>()
-        ));
-    } catch (...) {
-        return std::nullopt;
-    }
-}
-
-void File::read() {
-    text = read_file(path);
-    if (!text) {
-        log::error("Could not read file {}", path);
-    }
-}
-
-// Workspace ----------------------------------------------------------------------
-
-void Workspace::handle_file_changed(std::string_view file_path){
-    // TODO read the file
-    // Note: this can be done way easier if we just get the message from the lsp as it sends the file content anyways
-}
-
-std::vector<File*> Workspace::get_project_files(const std::filesystem::path& active_file) const{
-    // TODO look for most fitting project for active file in workspace_config_
-    // When there is no active file, return default project files plus the active file
-    return {};
-}
+// Workspace Helpers ----------------------------------------------------------------------
 
 struct CollectProjectsData {
-    WorkspaceProjects::Log& log;
+    WorkspaceConfigLog& log;
     std::map<Project::Identifier, config::ProjectDefinition>& projects;
     std::unordered_set<std::filesystem::path> visited_configs;
 };
@@ -284,13 +275,17 @@ static std::shared_ptr<Project> instantiate_project(
     return project;
 }
 
-void Workspace::load_from_config(
-    const std::filesystem::path& workspace_root,
-    const std::filesystem::path& workspace_config_path,
-    const std::filesystem::path& global_config_path
-) {
-    workspace_config_ = WorkspaceProjects();
-    auto& log = workspace_config_.log;
+// Workspace --------------------------------------------------------------------------
+
+void Workspace::handle_file_changed(std::string_view file_path){
+    // TODO read the file
+    // Note: this can be done way easier if we just get the message from the lsp as it sends the file content anyways
+    auto it = projects_.tracked_files.find(file_path);
+}
+
+WorkspaceConfigLog Workspace::reload() {
+    projects_ = ProjectRegistry();
+    auto& log = projects_.log;
 
     std::map<Project::Identifier, config::ProjectDefinition> project_defs;
     std::optional<config::ProjectDefinition> default_project;
@@ -327,7 +322,7 @@ void Workspace::load_from_config(
     // convert project definitions to project instances
     for (const auto& [id, def] : project_defs) {
         projects[id] = {
-            .project = instantiate_project(def, workspace_config_.tracked_files), 
+            .project = instantiate_project(def, projects_.tracked_files), 
             .dependencies = std::move(def.dependencies)
         };
     }
@@ -343,12 +338,12 @@ void Workspace::load_from_config(
             p.project->dependencies.push_back(dep);        
         }
 
-        workspace_config_.all_projects.push_back(p.project);
+        projects_.all_projects.push_back(p.project);
     }
 
     // register default project
     if(auto& dp = default_project){
-        auto project = instantiate_project(dp.value(), workspace_config_.tracked_files);
+        auto project = instantiate_project(dp.value(), projects_.tracked_files);
         for (auto& dep_id : dp->dependencies) {
             if(!projects.contains(dep_id)) {
                 log.error("failed to resolve dependency " + dep_id + " for project " + project->name);
@@ -358,14 +353,16 @@ void Workspace::load_from_config(
             project->dependencies.push_back(dep);        
         }
 
-        workspace_config_.default_project = project;
+        projects_.default_project = project;
     } else {
         auto project = std::make_shared<Project>();
         project->name = "<no project>";
         project->files = {};
         project-> dependencies = {};
-        workspace_config_.default_project = project;
+        projects_.default_project = project;
     }
+
+    return projects_.log;
 }
 
 bool Workspace::is_file_part_of_project(const Project& project, const std::filesystem::path& file) const {
@@ -378,20 +375,20 @@ bool Workspace::is_file_part_of_project(const Project& project, const std::files
 std::optional<std::shared_ptr<Project>> Workspace::project_for_file(const std::filesystem::path& file) const {
     // try active project
     if(active_project.has_value()){
-        auto active = std::find_if(workspace_config_.all_projects.begin(), workspace_config_.all_projects.end(), [&](const auto& project){
+        auto active = std::find_if(projects_.all_projects.begin(), projects_.all_projects.end(), [&](const auto& project){
             if(project->name == active_project.value()){
                 return true;
             }
             return false;
         });
-        if(active != workspace_config_.all_projects.end()){
+        if(active != projects_.all_projects.end()){
             if(is_file_part_of_project(**active, file))
                 return *active;
         }
     }
 
     // if not in active project, try next best project
-    for (const auto& project : workspace_config_.all_projects) {
+    for (const auto& project : projects_.all_projects) {
         for (const auto& f : project->files) {
             if (f->path == file) {
                 return project;

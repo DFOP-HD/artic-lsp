@@ -25,7 +25,7 @@ public:
     int run();
     void setup_events();
     void send_message(const std::string& message, lsp::MessageType type);
-    void compile_files(const std::vector<File>& files);
+    void compile_files(const std::vector<const File*>& files);
 
     lsp::Connection connection_;
     lsp::MessageHandler message_handler_;
@@ -34,8 +34,6 @@ private:
     std::string workspace_root_;
     std::string workspace_config_path_;
     std::string global_config_path_;
-    bool pending_initial_config_diags_ = false;
-    bool pending_initial_compile_ = false;
     
     // Project management
     Workspace workspace_;

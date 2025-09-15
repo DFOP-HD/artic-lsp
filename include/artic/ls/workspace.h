@@ -8,7 +8,7 @@
 #include <filesystem>
 #include <unordered_map>
 
-namespace artic::ls {
+namespace artic::ls::workspace {
 
 struct Project;
 
@@ -33,26 +33,31 @@ struct Project {
     std::vector<const File*> collect_files() const;
 };
 
-struct WorkspaceProjects {
+struct WorkspaceConfigLog {
+    std::vector<std::string> errors;
+    std::vector<std::string> warnings;
+    void error(std::string msg) { errors.push_back(std::move(msg)); }
+    void warn (std::string msg) { warnings.push_back(std::move(msg)); }
+};
+
+struct ProjectRegistry {
     std::shared_ptr<Project> default_project;
     std::vector<std::shared_ptr<Project>>   all_projects;
     std::unordered_map<std::filesystem::path, std::shared_ptr<File>> tracked_files;
 
-    struct Log {
-        std::vector<std::string> errors;
-        std::vector<std::string> warnings;
-        void error(std::string msg) { errors.push_back(std::move(msg)); }
-        void warn (std::string msg) { warnings.push_back(std::move(msg)); }
-    } log;
+    WorkspaceConfigLog log;
 };
 
 class Workspace {
 public:
-    void load_from_config(
+    Workspace(
         const std::filesystem::path& workspace_root,
         const std::filesystem::path& workspace_config_path = {},
-        const std::filesystem::path& global_config_path = {}
-    );
+        const std::filesystem::path& global_config_path = {})   
+        : workspace_root(workspace_root) , workspace_config_path(workspace_config_path), global_config_path(global_config_path)
+    {}
+
+    WorkspaceConfigLog reload();
 
     void handle_file_changed(std::string_view file_path);
     void handle_file_created(std::string_view file_path){/* TODO */}
@@ -62,13 +67,16 @@ public:
     std::optional<std::shared_ptr<Project>> project_for_file(const std::filesystem::path& file) const;
     
     std::optional<Project::Identifier> active_project;
+
 private:
-    WorkspaceProjects workspace_config_;
+    std::filesystem::path workspace_root;
+    std::filesystem::path workspace_config_path;
+    std::filesystem::path global_config_path;
+    ProjectRegistry projects_;
 };
 
 
 namespace config {
-
 
 struct ProjectDefinition {
     // Unique project name.

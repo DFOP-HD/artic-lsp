@@ -42,21 +42,21 @@ struct MemBuf : public std::streambuf {
 
 namespace artic::ls::compiler {
 
-std::unique_ptr<CompileResult> compile_files(const std::shared_ptr<CompilerInstance>& compiler, const std::vector<File>& files) {
+std::unique_ptr<CompileResult> compile_files(const std::shared_ptr<CompilerInstance>& compiler, const std::vector<const File*>& files) {
     auto program = compiler->arena.make_ptr<ast::ModDecl>();
 
     for (auto& file : files){
-        if (!file.text) {
+        if (!file->text) {
             log::error("Cannot open file");
             return std::make_unique<CompileResult>(compiler, nullptr, CompileResult::Invalid);
         }
         if (compiler->log.locator)
-            compiler->log.locator->register_file(file.path, file.text.value());
+            compiler->log.locator->register_file(file->path, file->text.value());
 
-        MemBuf mem_buf(file.text.value());
+        MemBuf mem_buf(file->text.value());
         std::istream is(&mem_buf);
 
-        Lexer lexer(compiler->log, file.path, is);
+        Lexer lexer(compiler->log, file->path, is);
         Parser parser(compiler->log, lexer, compiler->arena);
         parser.warns_as_errors = compiler->warns_as_errors;
         auto module = parser.parse();
