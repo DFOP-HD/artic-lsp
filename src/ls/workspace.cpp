@@ -29,7 +29,7 @@ static std::filesystem::path to_absolute_path(const std::filesystem::path& base_
     return abs_path;
 }
 
-static std::optional<ConfigDocument> parse_config(const std::filesystem::path& config_path, WorkspaceConfig::Log& log) {
+static std::optional<ConfigDocument> parse_config(const std::filesystem::path& config_path, WorkspaceProjects::Log& log) {
     if (!std::filesystem::exists(config_path)) {
         log.error("Config file does not exist: " + config_path.string());
         return std::nullopt;
@@ -147,7 +147,7 @@ std::vector<File*> Workspace::get_project_files(const std::filesystem::path& act
 }
 
 struct CollectProjectsData {
-    WorkspaceConfig::Log& log;
+    WorkspaceProjects::Log& log;
     std::map<Project::Identifier, config::ProjectDefinition>& projects;
     std::unordered_set<std::filesystem::path> visited_configs;
 };
@@ -289,7 +289,7 @@ void Workspace::load_from_config(
     const std::filesystem::path& workspace_config_path,
     const std::filesystem::path& global_config_path
 ) {
-    workspace_config_ = WorkspaceConfig();
+    workspace_config_ = WorkspaceProjects();
     auto& log = workspace_config_.log;
 
     std::map<Project::Identifier, config::ProjectDefinition> project_defs;
@@ -309,6 +309,11 @@ void Workspace::load_from_config(
         collect_projects_recursive(local_config.value(), data);
         if(auto& dp = local_config->default_project){
             default_project = dp.value();
+        }
+        if(local_config->projects.empty()) {
+            active_project = std::nullopt;
+        } else {
+            active_project = local_config->projects.front().name;
         }
     }
 
@@ -354,6 +359,58 @@ void Workspace::load_from_config(
         }
 
         workspace_config_.default_project = project;
+    } else {
+        auto project = std::make_shared<Project>();
+        project->name = "<no project>";
+        project->files = {};
+        project-> dependencies = {};
+        workspace_config_.default_project = project;
+    }
+}
+
+bool Workspace::is_file_part_of_project(const Project& project, const std::filesystem::path& file) const {
+    for (const auto& file : project.collect_files()) {
+        if(file->path == file->path) return true;
+    }
+    return false;
+}
+
+std::optional<std::shared_ptr<Project>> Workspace::project_for_file(const std::filesystem::path& file) const {
+    // try active project
+    if(active_project.has_value()){
+        auto active = std::find_if(workspace_config_.all_projects.begin(), workspace_config_.all_projects.end(), [&](const auto& project){
+            if(project->name == active_project.value()){
+                return true;
+            }
+            return false;
+        });
+        if(active != workspace_config_.all_projects.end()){
+            if(is_file_part_of_project(**active, file))
+                return *active;
+        }
+    }
+
+    // if not in active project, try next best project
+    for (const auto& project : workspace_config_.all_projects) {
+        for (const auto& f : project->files) {
+            if (f->path == file) {
+                return project;
+            }
+        }
+    }
+
+    // no project can be found
+    return std::nullopt;
+}
+
+std::vector<const File*> Project::collect_files() const {
+    std::vector<const File*> result;
+    for (const auto& file : files) {
+        result.push_back(file.get());
+    }
+    for (const auto& dependency : dependencies){
+        auto dep_files = dependency->collect_files();
+        result.insert(result.end(), dep_files.begin(), dep_files.end());
     }
 }
 

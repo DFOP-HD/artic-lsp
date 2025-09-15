@@ -25,16 +25,16 @@ struct File {
 
 struct Project {
     using Identifier = std::string;
-    enum Origin { LocalDefinition, LocalInclude, GlobalDefinition, GlobalInclude };
-
     Identifier name;
 
     std::vector<std::shared_ptr<File>> files;
     std::vector<std::shared_ptr<Project>> dependencies;
+
+    std::vector<const File*> collect_files() const;
 };
 
-struct WorkspaceConfig {
-    std::optional<std::shared_ptr<Project>> default_project;
+struct WorkspaceProjects {
+    std::shared_ptr<Project> default_project;
     std::vector<std::shared_ptr<Project>>   all_projects;
     std::unordered_map<std::filesystem::path, std::shared_ptr<File>> tracked_files;
 
@@ -48,18 +48,22 @@ struct WorkspaceConfig {
 
 class Workspace {
 public:
-    void load_from_config(const std::filesystem::path& workspace_root,
-                          const std::filesystem::path& workspace_config_path = {},
-                          const std::filesystem::path& global_config_path = {});
+    void load_from_config(
+        const std::filesystem::path& workspace_root,
+        const std::filesystem::path& workspace_config_path = {},
+        const std::filesystem::path& global_config_path = {}
+    );
 
     void handle_file_changed(std::string_view file_path);
     void handle_file_created(std::string_view file_path){/* TODO */}
     void handle_file_deleted(std::string_view file_path){/* TODO */}
 
-    std::vector<File*> get_project_files(const std::filesystem::path& active_file) const;
-
-// private:
-    WorkspaceConfig workspace_config_;
+    bool is_file_part_of_project(const Project& project, const std::filesystem::path& file) const;
+    std::optional<std::shared_ptr<Project>> project_for_file(const std::filesystem::path& file) const;
+    
+    std::optional<Project::Identifier> active_project;
+private:
+    WorkspaceProjects workspace_config_;
 };
 
 
@@ -97,10 +101,10 @@ struct IncludeConfig {
 
 struct ConfigDocument {
     std::string version;
-    std::vector<ProjectDefinition>       projects;
-    std::optional<ProjectDefinition>     default_project;
-    std::vector<IncludeConfig> includes;
-    std::filesystem::path                path;
+    std::vector<ProjectDefinition>   projects;
+    std::optional<ProjectDefinition> default_project;
+    std::vector<IncludeConfig>       includes;
+    std::filesystem::path            path;
 };
 
 } // namespace config
