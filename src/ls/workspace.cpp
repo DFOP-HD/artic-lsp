@@ -187,13 +187,23 @@ static void collect_projects_recursive(const config::ConfigDocument& config, Col
         if (!std::filesystem::exists(include.path)) {
             if(include.is_optional) continue;
         }
-
         
         if(auto include_config = config::parse_config(include.path, log)) {
-            log.file_context = config.path;
             collect_projects_recursive(include_config.value(), data, depth+1);
             
-            log.info("Path: " + include.path.string(), include.raw_path_string);
+            log.file_context = config.path;
+            auto log_project_info = [&](const config::ConfigDocument& cfg){
+                std::ostringstream s;
+
+                s << cfg.projects.size() << " + ?" << " projects: ";
+                s << std::endl; 
+                for(const auto& file : cfg.projects) {
+                    s << "- " << file.name << std::endl;
+                }
+                log.info(s.str(), include.raw_path_string);
+            };
+            log_project_info(include_config.value());
+            log.info("Path: \"" + include.path.string() + "\"", include.raw_path_string);
         }
     }
 }
@@ -428,22 +438,23 @@ void Workspace::reload(ConfigLog& log) {
     
     for (auto& [id, p] : projects) {     
         auto log_project_info = [&, &origin=p.project->origin](const Project& dep){
+            if(dep.origin != origin)
+                log.info("Declared in config \"" + dep.origin.string() + "\"", dep.name);
+
             auto files = dep.collect_files();
             std::ostringstream s;
             auto num_own_files = dep.files.size();
             auto dep_files = files.size() - num_own_files;
             s << num_own_files; 
             if(dep_files > 0) s << " + " << dep_files;
-            s << " files | ";
-            if(dep.origin == origin)
-                s << "declared in this config";
-            else
-                s << "declared in config " << "\"" << dep.origin.string() << "\"";
-            s << " | files: " << std::endl;
+            s << " files: " << std::endl;
             for(const auto& file : files) {
                 s << "- " << "\"" << std::filesystem::weakly_canonical(file->path).string() << "\" " << std::endl;
             }
             log.info(s.str(), dep.name);
+
+            if(dep.origin == origin)
+                log.info("Declared in this config", dep.name);
         };
 
         log.file_context = p.project->origin;
@@ -562,7 +573,7 @@ static inline void print_project(const Project& proj, int ind = 0){
         if(print_recursive)
             print_project(*dep, ind + 2);
         else {
-            indent(ind+1);
+            indent(ind+2);
             log::debug("project: '{}'", dep->name);
         }
     }
