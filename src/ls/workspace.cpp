@@ -45,24 +45,24 @@ void File::read() const {
 namespace config {
 
 static std::filesystem::path to_absolute_path(const std::filesystem::path& base_dir, std::string_view path) {
-    std::filesystem::path abs_path;
     if(path.starts_with("~")) {
         static const char* home = std::getenv("HOME");
-        if(home) abs_path = std::filesystem::path(home) / path.substr(1);
+        if(home) return std::filesystem::path(home) / path.substr(1);
+        else return "";
     }
-    if(!abs_path.is_absolute()){
-        abs_path = base_dir / abs_path;
-    }
-    return abs_path;
+    if(path.starts_with("/"))
+        return path;
+
+    return base_dir / path;
 }
 
 static std::optional<ConfigDocument> parse_config(const std::filesystem::path& config_path, WorkspaceConfigLog& log) {
     if(config_path.empty()){
-        log.error("Config file path is empty");
+        log.error("Config file path is empty", "include-projects");
         return std::nullopt;
     }
     if (!std::filesystem::exists(config_path)) {
-        log.error("Config file does not exist: " + config_path.string());
+        log.error("Config file does not exist: " + config_path.string(), config_path.string());
         return std::nullopt;
     }
     try {
@@ -75,21 +75,23 @@ static std::optional<ConfigDocument> parse_config(const std::filesystem::path& c
         if (!j.contains("artic-config")) {
             log.error(
                 "Missing artic-config header in " + config_path.string()
-                + "\nExample: " + nlohmann::json{{"artic-config", "1.0"}}.dump()
+                + "\nExample: " + nlohmann::json{{"artic-config", "1.0"}}.dump(),
+                "projects"
             );
             return std::nullopt;
         }
         doc.version = j["artic-config"].get<std::string>();
         if (doc.version != "1.0") {
-            log.warn("Unsupported artic-config version in " + config_path.string());
+            log.warn("Unsupported artic-config version in " + config_path.string(), "artic-config");
         }
 
         auto parse_project = [&](const nlohmann::json& pj) -> std::optional<ProjectDefinition> {
             ProjectDefinition p;
             if (!pj.contains("name")) { 
-                log.warn(
+                log.error(
                     "Project without name in " + config_path.string()
-                    + "\nExample: " + nlohmann::json{{"name", "my_project"}}.dump()
+                    + "\nExample: " + nlohmann::json{{"name", "my_project"}}.dump(),
+                    "projects"
                 );
                 return std::nullopt;
             }
@@ -130,7 +132,7 @@ static std::optional<ConfigDocument> parse_config(const std::filesystem::path& c
                 doc.includes.push_back(std::move(include));
             }
             if(missing_global) {
-                log.warn("'include-projects' should contain '<global>' to improve readability as global projects are implicitly included");
+                log.warn("'include-projects' should contain '<global>' to improve readability as global projects are implicitly included", "include-projects");
             }
         }
         return doc;
@@ -162,7 +164,7 @@ static void collect_projects_recursive(const config::ConfigDocument& config, Col
             if(val.origin == proj.origin) {
                 if(depth < val.depth) val.depth = depth;
             } else {
-                data.log.warn("ignoring duplicate definition of " + proj.name + " in " + proj.origin.string());
+                data.log.warn("ignoring duplicate definition of " + proj.name + " in " + proj.origin.string(), proj.name);
             }
             continue;
         }
@@ -170,6 +172,7 @@ static void collect_projects_recursive(const config::ConfigDocument& config, Col
         data.projects[proj.name] = proj;
         data.projects[proj.name].depth = depth;
     }
+    data.log.override_context = "include-projects";
     // Recurse included configs
     for (const auto& include : config.includes) {
         if (!std::filesystem::exists(include.path)) {
@@ -181,10 +184,81 @@ static void collect_projects_recursive(const config::ConfigDocument& config, Col
     }
 }
 
+static int match_pattern(
+    const std::string& pattern, bool recursive, 
+    const std::filesystem::path& root_dir, 
+    std::unordered_set<std::filesystem::path>& matched_files,
+    WorkspaceConfigLog& log
+) {
+    std::error_code ec;
+    std::filesystem::path base_dir = root_dir;
+    std::string glob = pattern;
+
+    // Expand ~ to $HOME
+    if (!glob.empty() && glob[0] == '~') {
+        const char* home = std::getenv("HOME");
+        if (home) {
+            glob = std::string(home) + glob.substr(1);
+            base_dir = "";
+        }
+    }
+
+    // If pattern is relative, resolve to base_dir
+    std::filesystem::path search_path = base_dir;
+    if (!glob.empty() && glob[0] == '/') {
+        search_path = "";
+    }
+
+    // Split pattern into directory and filename part
+    auto pos = glob.find_last_of("/\\");
+    std::string dir_part = pos != std::string::npos ? glob.substr(0, pos) : "";
+    std::string file_part = pos != std::string::npos ? glob.substr(pos + 1) : glob;
+
+    // Handle recursive **
+    bool has_recursive = glob.find("**") != std::string::npos;
+    std::filesystem::path walk_dir = search_path / dir_part;
+
+    int matched_count = 0;
+    auto match_entry = [&](const std::filesystem::directory_entry& entry){
+        if (!entry.is_regular_file()) return;
+        auto rel = std::filesystem::relative(entry.path(), root_dir, ec);
+        if (fnmatch(glob.c_str(), rel.string().c_str(), 0) == 0) {
+            matched_files.insert(entry.path());
+            matched_count++;
+        }
+    };
+    if (has_recursive) {
+        // Only one ** allowed
+        if (std::count(glob.begin(), glob.end(), '*') > 2) {
+            log.warn("Multiple recursive wildcards (**) are not supported in pattern: " + pattern, pattern);
+            return 0;
+        }
+        // Remove ** from dir_part for walking
+        auto recursive_pos = dir_part.find("**");
+        std::filesystem::path recursive_base = walk_dir;
+        if (recursive_pos != std::string::npos) {
+            recursive_base = search_path / dir_part.substr(0, recursive_pos);
+        }
+        for (auto& entry : std::filesystem::recursive_directory_iterator(recursive_base, ec)) {
+            match_entry(entry);
+        }
+    } else {
+        // Non-recursive: walk only one directory
+        std::filesystem::path dir_to_walk = walk_dir.empty() ? search_path : walk_dir;
+        if (std::filesystem::exists(dir_to_walk)) {
+            for (auto& entry : std::filesystem::directory_iterator(dir_to_walk, ec)) {
+                match_entry(entry);
+            }
+        }
+    }
+
+    return matched_count;
+}
+
 static std::shared_ptr<Project> instantiate_project(
     const config::ProjectDefinition& proj_def, 
     std::unordered_map<std::filesystem::path, std::shared_ptr<File>>& tracked_files,
-    WorkspaceConfigLog log
+    WorkspaceConfigLog& log
 ) {
     // evaluate file patterns
     std::vector<std::string> include_patterns;
@@ -202,52 +276,18 @@ static std::shared_ptr<Project> instantiate_project(
     // Collect all files matching include patterns and not matching exclude patterns
     std::unordered_set<std::filesystem::path> matched_files;
 
-    // TODO add support for ~/ path
-    auto match_pattern = [&](const std::string& pattern, bool recursive) {
-        int matched_count = 0;
-        std::filesystem::path base = root_dir;
-        std::string glob = pattern;
-        // Handle patterns like "src/**/*.cpp"
-        auto pos = pattern.find('/');
-        if (pos != std::string::npos && pattern.find("**") == pos) {
-            // "**/foo.cpp" or similar
-            glob = pattern.substr(pos + 1);
-        }
-        std::error_code ec;
-        if (recursive) {
-            for (auto& entry : std::filesystem::recursive_directory_iterator(base, ec)) {
-                if (entry.is_regular_file()) {
-                    auto rel = std::filesystem::relative(entry.path(), root_dir, ec);
-                    if (fnmatch(glob.c_str(), rel.string().c_str(), 0) == 0) {
-                        matched_files.insert(entry.path());
-                        matched_count++;
-                    }
-                }
-            }
-        } else {
-            for (auto& entry : std::filesystem::directory_iterator(base, ec)) {
-                if (entry.is_regular_file()) {
-                    auto rel = std::filesystem::relative(entry.path(), root_dir, ec);
-                    if (fnmatch(glob.c_str(), rel.string().c_str(), 0) == 0) {
-                        matched_files.insert(entry.path());
-                        matched_count++;
-                    }
-                }
-            }
-        }
-        log::debug("Pattern {} matched {} files", pattern, matched_count);
-        if(matched_count == 0){
-            log.warn("File pattern '" + pattern + "' matches 0 files");
-        }
-    };
-
     // Evaluate include patterns
     for (const auto& pattern : include_patterns) {
         bool recursive = pattern.find("**") != std::string::npos;
-        match_pattern(pattern, recursive);
+        int matched_count = match_pattern(pattern, recursive, root_dir, matched_files, log);
+        // log::debug("Pattern {} matched {} files", pattern, matched_count);
+        if (matched_count == 0) {
+            log.warn("File pattern '" + pattern + "' matches 0 files", pattern);
+        }
     }
 
     // Remove files matching any exclude pattern
+    // TODO improve
     for (const auto& pattern : exclude_patterns) {
         bool recursive = pattern.find("**") != std::string::npos;
         std::vector<std::filesystem::path> to_remove;
@@ -275,6 +315,7 @@ static std::shared_ptr<Project> instantiate_project(
 
     auto project = std::make_shared<Project>();
     project->name = proj_def.name;
+    project->origin = proj_def.origin;
 
     // Assign files to the project
     for (const auto& file : matched_files) {
@@ -299,26 +340,33 @@ void Workspace::reload(WorkspaceConfigLog& log) {
     std::optional<config::ProjectDefinition> default_project;
     CollectProjectsData data {.log = log, .projects=project_defs };
 
+    log.override_context = "include-projects";
     // Discover projects from global config recursively
-    if(auto global_config = config::parse_config(global_config_path, log)) {
-        collect_projects_recursive(global_config.value(), data);
-        if(auto& dp = global_config->default_project){
-            default_project = dp.value();
+    if(!global_config_path.empty()){
+        if(auto global_config = config::parse_config(global_config_path, log)) {
+            collect_projects_recursive(global_config.value(), data);
+            if(auto& dp = global_config->default_project){
+                default_project = dp.value();
+            }
         }
+    } else {
+        log.warn("Could not find global config file", "include-projects");
     }
-
+        
+    log.override_context = std::nullopt;
     // Discover projects from local config recursively
-    if(auto local_config = config::parse_config(workspace_config_path, log)) {
-        collect_projects_recursive(local_config.value(), data);
-        if(auto& dp = local_config->default_project){
-            default_project = dp.value();
+    if(!workspace_config_path.empty())
+        if(auto local_config = config::parse_config(workspace_config_path, log)) {
+            collect_projects_recursive(local_config.value(), data);
+            if(auto& dp = local_config->default_project){
+                default_project = dp.value();
+            }
+            if(local_config->projects.empty()) {
+                active_project = std::nullopt;
+            } else {
+                active_project = local_config->projects.front().name;
+            }
         }
-        if(local_config->projects.empty()) {
-            active_project = std::nullopt;
-        } else {
-            active_project = local_config->projects.front().name;
-        }
-    }
 
     struct IntermediateProject {
         std::shared_ptr<Project> project;
@@ -329,6 +377,9 @@ void Workspace::reload(WorkspaceConfigLog& log) {
 
     // convert project definitions to project instances
     for (const auto& [id, def] : project_defs) {
+        log.override_context = def.origin == workspace_config_path
+            ? std::nullopt
+            : std::make_optional("include-projects");
         projects[id] = {
             .project = instantiate_project(def, projects_.tracked_files, log), 
             .dependencies = std::move(def.dependencies)
@@ -336,10 +387,11 @@ void Workspace::reload(WorkspaceConfigLog& log) {
     }
     
     // resolve dependencies
+    log.override_context = std::nullopt;
     for (auto& [id, p] : projects) {
         for (auto& dep_id : p.dependencies) {
             if(!projects.contains(dep_id)) {
-                log.error("failed to resolve dependency " + dep_id + " for project " + p.project->name);
+                log.error("failed to resolve dependency " + dep_id + " for project " + p.project->name, p.project->name);
                 continue;
             }
             auto& dep = projects.at(dep_id).project;
@@ -349,12 +401,14 @@ void Workspace::reload(WorkspaceConfigLog& log) {
         projects_.all_projects.push_back(p.project);
     }
 
+
     // register default project
+    log.override_context = "<global>";
     if(auto& dp = default_project){
         auto project = instantiate_project(dp.value(), projects_.tracked_files, log);
         for (auto& dep_id : dp->dependencies) {
             if(!projects.contains(dep_id)) {
-                log.error("failed to resolve dependency " + dep_id + " for project " + project->name);
+                log.error("failed to resolve dependency " + dep_id + " for project " + project->name, dep_id);
                 continue;
             }
             auto& dep = projects.at(dep_id).project;
@@ -370,10 +424,7 @@ void Workspace::reload(WorkspaceConfigLog& log) {
         projects_.default_project = project;
     }
 
-    bool print_projects = true;
-    if (print_projects) {
-        projects_.print();
-    }
+    log.override_context = std::nullopt;
 }
 
 bool Workspace::is_file_part_of_project(const Project& project, const std::filesystem::path& file) const {
@@ -425,9 +476,9 @@ std::vector<const File*> Project::collect_files() const {
 
 static inline void print_project(const Project& proj, int ind = 0){
     auto indent = [](int i){ 
-        log::Output out(std::clog, false);
+        // log::Output out(std::clog, false);
         for (int j=0; j<i; j++)
-            log::format(out, "    ");
+            std::clog << "  ";
     };
 
     indent(ind);
@@ -437,7 +488,7 @@ static inline void print_project(const Project& proj, int ind = 0){
     log::debug("files: (");
     for (const auto& file : proj.files) {
         indent(ind+2);
-        log::debug("- {}", file->path);
+        log::debug("{}", file->path);
     }
 
     indent(ind+1);
@@ -446,7 +497,6 @@ static inline void print_project(const Project& proj, int ind = 0){
     indent(ind+1);
     log::debug("dependencies: (");
     for (const auto& dep : proj.dependencies) {
-        indent(ind+2);
         print_project(*dep, ind + 2);
     }
     indent(ind+1);
@@ -462,6 +512,7 @@ void ProjectRegistry::print() const {
         print_project(*p);
     }
     log::debug("--- Project Registry ---");
+    std::clog << std::endl;
 }
 
 } // namespace artic::ls

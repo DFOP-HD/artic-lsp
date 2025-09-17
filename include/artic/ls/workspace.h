@@ -26,6 +26,7 @@ struct File {
 struct Project {
     using Identifier = std::string;
     Identifier name;
+    std::filesystem::path origin; // config file that declared the project
 
     std::vector<std::shared_ptr<File>> files;
     std::vector<std::shared_ptr<Project>> dependencies;
@@ -34,10 +35,32 @@ struct Project {
 };
 
 struct WorkspaceConfigLog {
-    std::vector<std::string> errors;
-    std::vector<std::string> warnings;
-    void error(std::string msg) { errors.push_back(std::move(msg)); }
-    void warn (std::string msg) { warnings.push_back(std::move(msg)); }
+    struct Context {
+        std::string literal;
+    };
+    struct Message {
+        std::string message;
+        std::optional<Context> context;
+    };
+    std::optional<std::string> override_context;
+    std::vector<Message> errors;
+    std::vector<Message> warnings;
+
+    void error(std::string msg) { errors.push_back({std::move(msg), make_context()}); }
+    void warn (std::string msg) { warnings.push_back({std::move(msg), make_context()}); }
+
+    void error(std::string msg, std::string context) { errors.push_back({std::move(msg), make_context(std::move(context))}); }
+    void warn (std::string msg, std::string context) { warnings.push_back({std::move(msg), make_context(std::move(context))}); }
+
+private:
+    std::optional<Context> make_context() {
+        if(override_context) return Context{override_context.value()};
+        return std::nullopt;
+    }
+    Context make_context(std::string&& literal) {
+        if(override_context) return Context{override_context.value()};
+        else return {literal};
+    }
 };
 
 struct ProjectRegistry {
