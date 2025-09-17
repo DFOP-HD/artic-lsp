@@ -435,56 +435,58 @@ void Workspace::reload(ConfigLog& log) {
         projects_.all_projects.push_back(p.project);
     }
 
+    auto log_project_info = [&](const Project& dep, const std::filesystem::path& current_config){
+        log.file_context = current_config;
+        if(dep.origin != current_config)
+            log.info("Declared in config \"" + dep.origin.string() + "\"", dep.name);
+
+        auto files = dep.collect_files();
+        std::ostringstream s;
+        auto num_own_files = dep.files.size();
+        auto dep_files = files.size() - num_own_files;
+        s << num_own_files; 
+        if(dep_files > 0) s << " + " << dep_files;
+        s << " files: " << std::endl;
+        for(const auto& file : files) {
+            s << "- " << "\"" << std::filesystem::weakly_canonical(file->path).string() << "\" " << std::endl;
+        }
+        log.info(s.str(), dep.name);
+
+        if(dep.origin == current_config)
+            log.info("Declared in this config", dep.name);
+    };
+
     // log dependency resolution
-    
     for (auto& [id, p] : projects) {     
-        auto log_project_info = [&, &origin=p.project->origin](const Project& dep){
-            if(dep.origin != origin)
-                log.info("Declared in config \"" + dep.origin.string() + "\"", dep.name);
-
-            auto files = dep.collect_files();
-            std::ostringstream s;
-            auto num_own_files = dep.files.size();
-            auto dep_files = files.size() - num_own_files;
-            s << num_own_files; 
-            if(dep_files > 0) s << " + " << dep_files;
-            s << " files: " << std::endl;
-            for(const auto& file : files) {
-                s << "- " << "\"" << std::filesystem::weakly_canonical(file->path).string() << "\" " << std::endl;
-            }
-            log.info(s.str(), dep.name);
-
-            if(dep.origin == origin)
-                log.info("Declared in this config", dep.name);
-        };
-
         log.file_context = p.project->origin;
-        log_project_info(*p.project);
+        log_project_info(*p.project, p.project->origin);
 
         for (auto& dep_id : p.dependencies) {
             if(projects.contains(dep_id)) {
                 auto& dep = projects.at(dep_id).project;
-                log_project_info(*dep);
-                p.project->dependencies.push_back(dep);   
+                log_project_info(*dep, p.project->origin);
             } else {
                 log.error("Failed to resolve dependency " + dep_id + " for project " + p.project->name, p.project->name);
             }
         }
-
-        projects_.all_projects.push_back(p.project);
     }
 
     // register default project
     if(auto& dp = default_project){
         auto project = instantiate_project(dp.value(), projects_.tracked_files, log);
+        log.file_context = project->origin;
+        log_project_info(*project, project->origin);
+
         for (auto& dep_id : dp->dependencies) {
-            if(!projects.contains(dep_id)) {
+            if(projects.contains(dep_id)) {
+                auto& dep = projects.at(dep_id).project;
+                project->dependencies.push_back(dep);            
+
+                log_project_info(*dep, project->origin);
+            } else {
                 log.file_context = dp->origin;
                 log.error("Failed to resolve dependency " + dep_id + " for default project " + project->name, dep_id);
-                continue;
             }
-            auto& dep = projects.at(dep_id).project;
-            project->dependencies.push_back(dep);        
         }
 
         projects_.default_project = project;
