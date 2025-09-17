@@ -54,13 +54,16 @@ struct ConfigLog {
     void info (std::string msg, std::optional<std::string> context=std::nullopt) { messages.push_back(make_message(Severity::Information, std::move(msg), context)); }
 
 private:
+    static std::string quote(std::string_view in) {
+        return '\"' + std::string(in) + '\"';
+    }
     Message make_message(Severity s, std::string msg, std::optional<std::string> context) {
         return Message{
             .message=std::move(msg),
             .severity=s,
             .file=file_context, 
             .context= context 
-                ? std::make_optional(Context{context.value()}) 
+                ? std::make_optional(Context{quote(context.value())}) 
                 : std::nullopt
         };
     }

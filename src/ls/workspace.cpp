@@ -5,6 +5,7 @@
 #include <fstream>
 #include <filesystem>
 #include <fnmatch.h>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -166,10 +167,12 @@ static void collect_projects_recursive(const config::ConfigDocument& config, Col
             // already registered
             auto& val = data.projects[proj.name];
             if(val.origin == proj.origin) {
-                if(depth < val.depth) val.depth = depth;
-            } else {
-                data.log.warn("ignoring duplicate definition of " + proj.name + " in " + proj.origin.string(), proj.name);
+                if(depth < val.depth) {
+                    val.depth = depth;
+                    continue;
+                }
             }
+            data.log.warn("ignoring duplicate definition of " + proj.name + " in " + proj.origin.string(), proj.name);
             continue;
         }
 
@@ -294,14 +297,15 @@ static std::shared_ptr<Project> instantiate_project(
         }
     }
 
-    {
+    auto file_arr_to_string = [](const auto& files, const std::filesystem::path& root_dir){
         std::ostringstream s;
-        s << matched_files.size() << " files:" << std::endl;
-        for(const auto& file : matched_files) {
+        s << files.size() << " files:" << std::endl;
+        for(const auto& file : files) {
             s << "- " << std::filesystem::relative(file, root_dir).string() << " " << std::endl;
         }
-        log.info(s.str(), "files");
-    }
+        return s.str();
+    };
+    // log.info(file_arr_to_string(matched_files, root_dir), proj_def.name);
 
     // Remove files matching any exclude pattern
     // TODO improve
@@ -369,7 +373,7 @@ void Workspace::reload(ConfigLog& log) {
         }
         log.info("global config: " + global_config_path.string(), "<global>");
     } else {
-        log.warn("Could not find global config file", "include-projects");
+        log.warn("Could not find global config file", "<global>");
     }
         
     // Discover projects from local config recursively
@@ -404,18 +408,48 @@ void Workspace::reload(ConfigLog& log) {
     // resolve dependencies
     for (auto& [id, p] : projects) {
         for (auto& dep_id : p.dependencies) {
-            if(!projects.contains(dep_id)) {
-                log.file_context = p.project->origin;
-                log.error("failed to resolve dependency " + dep_id + " for project " + p.project->name, p.project->name);
-                continue;
-            } else {
-            }
-            auto& dep = projects.at(dep_id).project;
-            if(dep->origin == p.project->origin)
-                log.info("found in this config", dep_id);
+            if(projects.contains(dep_id)) {
+                auto& dep = projects.at(dep_id).project;
+                p.project->dependencies.push_back(dep);
+            } 
+        }
+
+        projects_.all_projects.push_back(p.project);
+    }
+
+    // log dependency resolution
+    
+    for (auto& [id, p] : projects) {     
+        auto log_project_info = [&, &origin=p.project->origin](const Project& dep){
+            auto files = dep.collect_files();
+            std::ostringstream s;
+            auto num_own_files = dep.files.size();
+            auto dep_files = files.size() - num_own_files;
+            s << num_own_files; 
+            if(dep_files > 0) s << " + " << dep_files;
+            s << " files | ";
+            if(dep.origin == origin)
+                s << "declared in this config";
             else
-                log.info("found in " + dep->origin.string(), dep_id);
-            p.project->dependencies.push_back(dep);        
+                s << "declared in config " << "\"" << dep.origin.string() << "\"";
+            s << " | files: " << std::endl;
+            for(const auto& file : files) {
+                s << "- " << "\"" << std::filesystem::weakly_canonical(file->path).string() << "\" " << std::endl;
+            }
+            log.info(s.str(), dep.name);
+        };
+
+        log.file_context = p.project->origin;
+        log_project_info(*p.project);
+
+        for (auto& dep_id : p.dependencies) {
+            if(projects.contains(dep_id)) {
+                auto& dep = projects.at(dep_id).project;
+                log_project_info(*dep);
+                p.project->dependencies.push_back(dep);   
+            } else {
+                log.error("failed to resolve dependency " + dep_id + " for project " + p.project->name, p.project->name);
+            }
         }
 
         projects_.all_projects.push_back(p.project);
@@ -442,6 +476,7 @@ void Workspace::reload(ConfigLog& log) {
         project-> dependencies = {};
         projects_.default_project = project;
     }
+
     log.file_context = "";
 }
 
@@ -516,7 +551,13 @@ static inline void print_project(const Project& proj, int ind = 0){
     indent(ind+1);
     log::debug("dependencies: (");
     for (const auto& dep : proj.dependencies) {
-        print_project(*dep, ind + 2);
+        const bool print_recursive = false;
+        if(print_recursive)
+            print_project(*dep, ind + 2);
+        else {
+            indent(ind+1);
+            log::debug("project: '{}'", dep->name);
+        }
     }
     indent(ind+1);
     log::debug(")");
