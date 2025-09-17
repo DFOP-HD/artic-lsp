@@ -9,6 +9,7 @@
 #include <lsp/connection.h>
 #include <lsp/messagehandler.h>
 #include "artic/ls/compile.h"
+#include <span>
 
 namespace artic::ls {
 
@@ -25,7 +26,7 @@ public:
     int run();
     void setup_events();
     void send_message(const std::string& message, lsp::MessageType type);
-    void compile_files(const std::vector<const workspace::File*>& files);
+    void compile_files(std::span<const workspace::File*> files);
     void compile_file(const std::filesystem::path& file);
 
     lsp::Connection connection_;

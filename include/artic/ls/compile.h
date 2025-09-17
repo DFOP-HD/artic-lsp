@@ -6,6 +6,7 @@
 #include "artic/types.h"
 #include "artic/locator.h"
 #include "artic/log.h"
+#include <span>
 
 namespace artic::ls::compiler {
 
@@ -42,7 +43,7 @@ struct CompileResult {
     {}
 };
 
-std::unique_ptr<CompileResult> compile_files(const std::shared_ptr<CompilerInstance>& compiler, const std::vector<const workspace::File*>& files);
+std::unique_ptr<CompileResult> compile_files(std::span<const workspace::File*> files, const std::shared_ptr<CompilerInstance>& compiler);
 
 } // namespace artic::ls::compiler
 

@@ -42,7 +42,7 @@ struct MemBuf : public std::streambuf {
 
 namespace artic::ls::compiler {
 
-std::unique_ptr<CompileResult> compile_files(const std::shared_ptr<CompilerInstance>& compiler, const std::vector<const workspace::File*>& files) {
+std::unique_ptr<CompileResult> compile_files(std::span<const workspace::File*> files, const std::shared_ptr<CompilerInstance>& compiler) {
     auto program = compiler->arena.make_ptr<ast::ModDecl>();
 
     for (auto& file : files){

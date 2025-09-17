@@ -6,6 +6,7 @@
 #include "artic/log.h"
 #include "artic/ast.h"
 #include <cctype>
+#include <unordered_set>
 
 #include "artic/ls/crash.h"
 #include "artic/ls/workspace.h"
@@ -121,7 +122,8 @@ void Server::setup_events() {
         auto path = std::string(params.textDocument.uri.path());
         if(auto proj = workspace_->project_for_file(path)){
             // known project
-            compile_files(proj.value()->collect_files());
+            auto files = proj.value()->collect_files();
+            compile_files(files);
         } else {
             // default project
             log::debug("File not in workspace {}, using default project", path);
@@ -409,7 +411,7 @@ static lsp::Array<lsp::Diagnostic> convert_diagnostics(const std::vector<Diagnos
     return lsp_diagnostics;
 }
 
-void Server::compile_files(const std::vector<const workspace::File*>& files){
+void Server::compile_files(std::span<const workspace::File*> files){
     if (files.empty()) {
         log::error("no input files (compile_files)");
         return;
@@ -418,7 +420,7 @@ void Server::compile_files(const std::vector<const workspace::File*>& files){
     log::debug("Compiling {} provided file(s)", files.size());
 
     auto compiler = std::make_shared<compiler::CompilerInstance>();
-    last_compilation_result_ = compiler::compile_files(compiler, files);
+    last_compilation_result_ = compiler::compile_files(files, compiler);
     compiler->log.print_summary();
 
     if(last_compilation_result_->stage == compiler::CompileResult::Valid){

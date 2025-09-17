@@ -463,15 +463,16 @@ std::optional<std::shared_ptr<Project>> Workspace::project_for_file(const std::f
 }
 
 std::vector<const File*> Project::collect_files() const {
-    std::vector<const File*> result;
+    std::unordered_set<const File*> result;
     for (const auto& file : files) {
-        result.push_back(file.get());
+        result.insert(file.get());
     }
     for (const auto& dependency : dependencies){
         auto dep_files = dependency->collect_files();
-        result.insert(result.end(), dep_files.begin(), dep_files.end());
+        result.insert(dep_files.begin(), dep_files.end());
     }
-    return result;
+    std::vector res(result.begin(), result.end());
+    return res;
 }
 
 static inline void print_project(const Project& proj, int ind = 0){
