@@ -32,7 +32,7 @@ static std::optional<std::string> read_file(const std::string& file) {
     }
 }
 
-void File::read() {
+void File::read() const {
     text = read_file(path);
     if (!text) {
         log::error("Could not read file {}", path);
@@ -277,15 +277,8 @@ static std::shared_ptr<Project> instantiate_project(
 
 // Workspace --------------------------------------------------------------------------
 
-void Workspace::handle_file_changed(std::string_view file_path){
-    // TODO read the file
-    // Note: this can be done way easier if we just get the message from the lsp as it sends the file content anyways
-    auto it = projects_.tracked_files.find(file_path);
-}
-
-WorkspaceConfigLog Workspace::reload() {
+void Workspace::reload(WorkspaceConfigLog& log) {
     projects_ = ProjectRegistry();
-    auto& log = projects_.log;
 
     std::map<Project::Identifier, config::ProjectDefinition> project_defs;
     std::optional<config::ProjectDefinition> default_project;
@@ -361,8 +354,6 @@ WorkspaceConfigLog Workspace::reload() {
         project-> dependencies = {};
         projects_.default_project = project;
     }
-
-    return projects_.log;
 }
 
 bool Workspace::is_file_part_of_project(const Project& project, const std::filesystem::path& file) const {
@@ -409,6 +400,37 @@ std::vector<const File*> Project::collect_files() const {
         auto dep_files = dependency->collect_files();
         result.insert(result.end(), dep_files.begin(), dep_files.end());
     }
+    return result;
+}
+
+static inline void print_project(const Project& proj, int indent = 0){
+    auto newline = [indent](int i){log::debug("\n{}", std::string(' ', (indent + i)*4));};
+
+    newline(indent);
+    log::debug("project: '{}' {", proj.name);
+    
+    newline(indent);
+    log::debug("files: {");
+    for (const auto& file : proj.files) {
+        newline(indent+1);
+        log::debug("- {}", file->path);
+    }
+    newline(indent);
+    log::debug("}");
+    newline(indent);
+    log::debug("dependencies: {");
+    for (const auto& dep : proj.dependencies) {
+        print_project(*dep, indent + 1);
+        newline(indent);
+    }
+    log::debug("}");
+    newline(indent);
+    log::debug("}");
+    newline(indent);
+}
+
+void ProjectRegistry::print() const {
+    // log::debug("default project: ", )
 }
 
 } // namespace artic::ls

@@ -8,6 +8,7 @@
 #include <cctype>
 
 #include "artic/ls/crash.h"
+#include "artic/ls/workspace.h"
 #include "lsp/types.h"
 
 #ifndef ENABLE_JSON
@@ -45,32 +46,37 @@ void Server::setup_events() {
     message_handler_.add<lsp::requests::Initialize>([this](lsp::requests::Initialize::Params&& params) {
         log::debug( "Received Initialize request");
         
+        std::filesystem::path workspace_root;
+        std::filesystem::path workspace_config_path;
+        std::filesystem::path global_config_path;
+
         // Extract workspace root from initialize params
         if (!params.rootUri.isNull()) {
-            workspace_root_ = params.rootUri.value().path();
-            log::debug("Workspace root: {}", workspace_root_);
-
-            // Extract initializationOptions (workspace/global config paths)
-            workspace_config_path_ = {};
-            global_config_path_    = {};
+            workspace_root = std::string(params.rootUri.value().path());
+            
             if (params.initializationOptions.has_value()) {
                 const auto& any = params.initializationOptions.value();
                 if (any.isObject()) {
                     const auto& obj = any.object();
                     if (auto it = obj.find("workspaceConfig"); it != obj.end() && it->second.isString()) {
-                        workspace_config_path_ = it->second.string();
+                        workspace_config_path = it->second.string();
                     }
                     if (auto it = obj.find("globalConfig"); it != obj.end() && it->second.isString()) {
-                        global_config_path_ = it->second.string();
+                        global_config_path = it->second.string();
                     }
                 }
             }
 
-            if(workspace_config_path_.empty()) send_message("No local artic.json workspace config", lsp::MessageType::Warning);
-            if(global_config_path_.empty())    send_message("No global artic.json config", lsp::MessageType::Warning);        
+            if(workspace_config_path.empty()) send_message("No local artic.json workspace config", lsp::MessageType::Warning);
+            if(global_config_path.empty())    send_message("No global artic.json config", lsp::MessageType::Warning);        
         } else {
             send_message("No workspace root provided in initialize request", lsp::MessageType::Error);
         }
+
+        log::debug("Workspace root: {}", workspace_root);
+        log::debug("Workspace config path: {}", workspace_config_path);
+        log::debug("Global config path: {}", global_config_path);
+        workspace_ = std::make_unique<workspace::Workspace>(workspace_root, workspace_config_path, global_config_path);
         
         return lsp::requests::Initialize::Result {
             .capabilities = lsp::ServerCapabilities{
@@ -89,9 +95,9 @@ void Server::setup_events() {
 
     message_handler_.add<lsp::notifications::Initialized>([this](lsp::notifications::Initialized::Params&&){
         log::debug("Received Initialized notification");
-        workspace_.load_from_config(workspace_root_, workspace_config_path_, global_config_path_);
-        publish_config_diagnostics();
-        // compile_files(workspace_.get_project_files());
+
+        reload_workspace();
+        // compile_files(workspace_->get_project_files());
     });
 
     // Shutdown ----------------------------------------------------------------------
@@ -112,24 +118,24 @@ void Server::setup_events() {
     message_handler_.add<lsp::notifications::TextDocument_DidOpen>([this](lsp::notifications::TextDocument_DidOpen::Params&& params) {
         log::debug("LSP Document Opened");
         auto path = std::string(params.textDocument.uri.path());
-        // If the opened file is already tracked by the workspace, compile the workspace; otherwise compile only this file
-        if(auto proj = workspace_.project_for_file(path)){
-            
+        if(auto proj = workspace_->project_for_file(path)){
+            // known project
             compile_files(proj.value()->collect_files());
-        }
-
-        bool in_workspace = false;
-        for (const auto& f : workspace_.get_project_files()) {
-            if (f.path == path) { in_workspace = true; break; }
-        }
-
-        if (in_workspace) {
-            compile_files(workspace_.get_project_files());
         } else {
-            File single{path};
-            log::debug("File not in workspace {}", single.path);
-            single.text = params.textDocument.text; // content sent on open
-            compile_files({std::move(single)});
+            // default project
+            log::debug("File not in workspace {}, using default project", path);
+            
+            auto files = workspace_->default_project()->collect_files();
+            workspace::File out_of_project_file(path);
+            out_of_project_file.read();
+            files.push_back(&out_of_project_file);
+
+            // TODO for maintainer
+            // maybe file should not be a temporary here to avoid use after free errors
+            // though i don't think file text should be accessed after compile_files.
+            // However, you could imagine if we do incremental compilation / recompilation at a later stage,
+            // log / locator could try to access the file text, which is likely stored as a string_view
+            compile_files(files);
         }
     });
     message_handler_.add<lsp::notifications::TextDocument_DidSave>([](lsp::notifications::TextDocument_DidSave::Params&& params) {
@@ -148,52 +154,43 @@ void Server::setup_events() {
     message_handler_.add<lsp::notifications::Workspace_DidChangeWatchedFiles>([this](lsp::notifications::Workspace_DidChangeWatchedFiles::Params&& params) {
         log::debug("LSP Workspace Did Change Watched Files");
 
+        std::filesystem::path active_file;
         for(auto& change : params.changes) {
+            auto path = change.uri.path();
+
+            if ((!workspace_->workspace_config_path.empty() && path == workspace_->workspace_config_path) || 
+                (!workspace_->global_config_path.empty()    && path == workspace_->global_config_path)) {
+                log::debug("Configuration file change detected; reloading workspace");
+                reload_workspace();
+                return;
+            }
+
             switch(change.type.index()) {
-                case lsp::FileChangeType::Created:
-                    workspace_.handle_file_created(change.uri.path());
+                case lsp::FileChangeType::Created: {
+                    reload_workspace();
+                    return;
+                }
+                case lsp::FileChangeType::Changed: {
+                    // update file content
+                    const auto& files = workspace_->projects_.tracked_files;
+                    auto it = files.find(path);            
+                    if(it != files.end()) {
+                        it->second->read();
+                    }
+
+                    // set active
+                    active_file = path;
                     break;
-                case lsp::FileChangeType::Changed:
-                    workspace_.handle_file_changed(change.uri.path());
-                    break;
-                case lsp::FileChangeType::Deleted:
-                    workspace_.handle_file_deleted(change.uri.path());
-                    break;
-                case lsp::FileChangeType::MAX_VALUE:                    break;
-            }
-            // If a config file changed, trigger full workspace reload once outside the loop
-        }
-        bool config_changed = false;
-        for (auto& c : params.changes) {
-            auto path = std::string(c.uri.path());
-            if ((!workspace_config_path_.empty() && path == workspace_config_path_) || (!global_config_path_.empty() && path == global_config_path_)) {
-                config_changed = true; break;
+                }
+                case lsp::FileChangeType::Deleted: {
+                    reload_workspace();
+                    return;
+                }
+                case lsp::FileChangeType::MAX_VALUE: break;
             }
         }
-        if (config_changed) {
-            log::debug("Configuration file change detected; reloading workspace");
-            reload_workspace();
-            return; // reload compiles; skip incremental compile below
-        }
-        // If the changed file is part of the workspace, compile the whole workspace; otherwise compile only that file
-        if (!params.changes.empty()) {
-            auto changed_path = std::string(params.changes.front().uri.path());
-            bool in_workspace = false;
-            for (const auto& f : workspace_.get_project_files()) {
-                if (f.path == changed_path) { in_workspace = true; break; }
-            }
-            if (in_workspace) {
-                compile_files(workspace_.get_project_files());
-            } else {
-                std::vector<File> files;
-                File single{changed_path};
-                single.read();
-                files.emplace_back(std::move(single));
-                compile_files(files);
-            }
-        } else {
-            compile_files(workspace_.get_project_files());
-        }
+        
+        compile_file(active_file);
     });
 
     // lsp::notifications::Workspace_DidChangeWorkspaceFolders
@@ -411,7 +408,7 @@ static lsp::Array<lsp::Diagnostic> convert_diagnostics(const std::vector<Diagnos
     return lsp_diagnostics;
 }
 
-void Server::compile_files(const std::vector<const File*>& files){
+void Server::compile_files(const std::vector<const workspace::File*>& files){
     if (files.empty()) {
         log::error("no input files (compile_files)");
         return;
@@ -447,36 +444,19 @@ void Server::compile_files(const std::vector<const File*>& files){
     }
 }
 
-void Server::reload_workspace(const std::string& active_file) {
-    log::debug("Server::reload_workspace: NOT IMPLEMENTED");
-    //TODO
-    //log::debug("Reloading workspace configuration");
-    // Clear previous diagnostics for project files
-    // for (const auto& f : workspace_.get_project_files()) {
-    //     message_handler_.sendNotification<lsp::notifications::TextDocument_PublishDiagnostics>(
-    //         lsp::notifications::TextDocument_PublishDiagnostics::Params {
-    //             .uri = lsp::FileUri::fromPath(f.path),
-    //             .diagnostics = {}
-    //         }
-    //     );
-    // }
+void Server::compile_file(const std::filesystem::path& file){
 
-    // workspace_.load_from_config(workspace_root_, workspace_config_path_, global_config_path_, active_file);
-    // if (!workspace_.errors().empty()) {
-    //     for (auto& e : workspace_.errors()) {
-    //         send_message(e, lsp::MessageType::Error);
-    //     }
-    // }
-    // for (auto& w : workspace_.warnings()) {
-    //     send_message(w, lsp::MessageType::Warning);
-    // }
-
-    // publish_config_diagnostics();
-    // compile_files(workspace_.get_project_files());
 }
 
-void Server::publish_config_diagnostics() {
-    // Build diagnostics for the config files themselves (no precise ranges yet; whole document range 0,0-0,0)
+void Server::reload_workspace(const std::string& active_file) {
+    log::debug("Reloading workspace configuration");
+    workspace::WorkspaceConfigLog log;
+    workspace_->reload(log);
+    // Clear previous diagnostics for project files
+    auto _ = message_handler_.sendRequest<lsp::requests::Workspace_Diagnostic_Refresh>();
+
+    // Publish diagnostics for the config files themselves 
+    // (no precise ranges yet, whole document range 0,0-0,0 as nlohmannjson does not provide parse locations)
     auto makeDiag = [](const std::string& msg, lsp::DiagnosticSeverity sev) {
         lsp::Diagnostic d;
         d.range = lsp::Range{ lsp::Position{0,0}, lsp::Position{0,0} };
@@ -487,8 +467,8 @@ void Server::publish_config_diagnostics() {
     auto publish = [&](const std::string& path){
         if (path.empty()) return;
         std::vector<lsp::Diagnostic> diags;
-        for (auto& e : workspace_.errors()) diags.push_back(makeDiag(e, lsp::DiagnosticSeverity::Error));
-        for (auto& w : workspace_.warnings()) diags.push_back(makeDiag(w, lsp::DiagnosticSeverity::Warning));
+        for (auto& e : log.errors) diags.push_back(makeDiag(e, lsp::DiagnosticSeverity::Error));
+        for (auto& w : log.warnings) diags.push_back(makeDiag(w, lsp::DiagnosticSeverity::Warning));
         message_handler_.sendNotification<lsp::notifications::TextDocument_PublishDiagnostics>(
             lsp::notifications::TextDocument_PublishDiagnostics::Params {
                 .uri = lsp::FileUri::fromPath(path),
@@ -496,8 +476,8 @@ void Server::publish_config_diagnostics() {
             }
         );
     };
-    publish(workspace_config_path_);
-    publish(global_config_path_);
+    publish(workspace_->workspace_config_path);
+    publish(workspace_->global_config_path);
 }
 
 } // namespace artic::ls

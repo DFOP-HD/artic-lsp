@@ -14,9 +14,9 @@ struct Project;
 
 struct File {
     std::filesystem::path path;
-    std::optional<std::string> text;
+    mutable std::optional<std::string> text; // TODO make non-mutable
 
-    void read();
+    void read() const;
 
     explicit File(std::filesystem::path path) 
         : path(std::move(path)), text(std::nullopt) 
@@ -45,7 +45,7 @@ struct ProjectRegistry {
     std::vector<std::shared_ptr<Project>>   all_projects;
     std::unordered_map<std::filesystem::path, std::shared_ptr<File>> tracked_files;
 
-    WorkspaceConfigLog log;
+    void print() const;
 };
 
 class Workspace {
@@ -54,25 +54,25 @@ public:
         const std::filesystem::path& workspace_root,
         const std::filesystem::path& workspace_config_path = {},
         const std::filesystem::path& global_config_path = {})   
-        : workspace_root(workspace_root) , workspace_config_path(workspace_config_path), global_config_path(global_config_path)
+        : workspace_root(workspace_root), workspace_config_path(workspace_config_path), global_config_path(global_config_path)
     {}
 
-    WorkspaceConfigLog reload();
+    void reload(WorkspaceConfigLog& log);
 
-    void handle_file_changed(std::string_view file_path);
-    void handle_file_created(std::string_view file_path){/* TODO */}
-    void handle_file_deleted(std::string_view file_path){/* TODO */}
-
-    bool is_file_part_of_project(const Project& project, const std::filesystem::path& file) const;
     std::optional<std::shared_ptr<Project>> project_for_file(const std::filesystem::path& file) const;
+    std::shared_ptr<Project> default_project() const { 
+        return projects_.default_project; 
+    }
     
     std::optional<Project::Identifier> active_project;
 
-private:
     std::filesystem::path workspace_root;
     std::filesystem::path workspace_config_path;
     std::filesystem::path global_config_path;
     ProjectRegistry projects_;
+
+private:
+    bool is_file_part_of_project(const Project& project, const std::filesystem::path& file) const;
 };
 
 

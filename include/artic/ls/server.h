@@ -25,22 +25,19 @@ public:
     int run();
     void setup_events();
     void send_message(const std::string& message, lsp::MessageType type);
-    void compile_files(const std::vector<const File*>& files);
+    void compile_files(const std::vector<const workspace::File*>& files);
+    void compile_file(const std::filesystem::path& file);
 
     lsp::Connection connection_;
     lsp::MessageHandler message_handler_;
 private:
     bool running_;
-    std::string workspace_root_;
-    std::string workspace_config_path_;
-    std::string global_config_path_;
     
     // Project management
-    Workspace workspace_;
+    std::unique_ptr<workspace::Workspace> workspace_;
     std::unique_ptr<compiler::CompileResult> last_compilation_result_;
 
     void reload_workspace(const std::string& active_file = {});
-    void publish_config_diagnostics();
 };
 
 } // namespace artic::ls

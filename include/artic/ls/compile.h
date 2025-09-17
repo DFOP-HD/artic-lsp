@@ -42,7 +42,7 @@ struct CompileResult {
     {}
 };
 
-std::unique_ptr<CompileResult> compile_files(const std::shared_ptr<CompilerInstance>& compiler, const std::vector<const File*>& files);
+std::unique_ptr<CompileResult> compile_files(const std::shared_ptr<CompilerInstance>& compiler, const std::vector<const workspace::File*>& files);
 
 } // namespace artic::ls::compiler
 
