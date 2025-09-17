@@ -131,6 +131,7 @@ static std::optional<ConfigDocument> parse_config(const std::filesystem::path& c
                 } 
                 include.path = to_absolute_path(config_path.parent_path(), path);
                 include.path = std::filesystem::weakly_canonical(include.path);
+                include.raw_path_string = path;
 
                 doc.includes.push_back(std::move(include));
             }
@@ -158,8 +159,10 @@ struct CollectProjectsData {
 static void collect_projects_recursive(const config::ConfigDocument& config, CollectProjectsData& data, int depth = 0) {
     if(data.visited_configs.contains(config.path)) return;
     data.visited_configs.insert(config.path);
+
+    auto& log = data.log;
     
-    data.log.file_context = config.path;
+    log.file_context = config.path;
 
     // Register Projects
     for (const auto& proj : config.projects) {
@@ -172,7 +175,7 @@ static void collect_projects_recursive(const config::ConfigDocument& config, Col
                     continue;
                 }
             }
-            data.log.warn("ignoring duplicate definition of " + proj.name + " in " + proj.origin.string(), proj.name);
+            log.warn("ignoring duplicate definition of " + proj.name + " in " + proj.origin.string(), proj.name);
             continue;
         }
 
@@ -185,8 +188,12 @@ static void collect_projects_recursive(const config::ConfigDocument& config, Col
             if(include.is_optional) continue;
         }
 
-        if(auto include_config = config::parse_config(include.path, data.log)) {
+        
+        if(auto include_config = config::parse_config(include.path, log)) {
+            log.file_context = config.path;
             collect_projects_recursive(include_config.value(), data, depth+1);
+            
+            log.info("Path: " + include.path.string(), include.raw_path_string);
         }
     }
 }

@@ -132,7 +132,8 @@ struct ProjectDefinition {
 
 struct IncludeConfig {
     // path to another artic.json
-    std::filesystem::path path; 
+    std::filesystem::path path;
+    std::string raw_path_string;
     bool is_optional = false;
 };
 
