@@ -66,7 +66,7 @@ std::unique_ptr<CompileResult> compile_files(std::span<const workspace::File*> f
             log::error("Parsing failed");
             return std::make_unique<CompileResult>(compiler, std::move(program), CompileResult::Invalid);
         } else {
-            log::debug("Parsing completed successfully");
+            // log::debug("Parsing completed successfully");
         }
 
         program->decls.insert(

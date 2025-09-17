@@ -502,8 +502,8 @@ void Workspace::reload(ConfigLog& log) {
 }
 
 bool Workspace::is_file_part_of_project(const Project& project, const std::filesystem::path& file) const {
-    for (const auto& file : project.collect_files()) {
-        if(file->path == file->path) return true;
+    for (auto* proj_file : project.collect_files()) {
+        if(proj_file->path == file) return true;
     }
     return false;
 }

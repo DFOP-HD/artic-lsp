@@ -397,7 +397,7 @@ void Server::compile_files(std::span<const workspace::File*> files){
         return;
     }
 
-    log::debug("Compiling {} provided file(s)", files.size());
+    log::debug("Compiling {} file(s)", files.size());
 
     auto compiler = std::make_shared<compiler::CompilerInstance>();
     last_compilation_result_ = compiler::compile_files(files, compiler);
@@ -431,12 +431,14 @@ void Server::compile_file(const std::filesystem::path& file){
     if(auto proj = workspace_->project_for_file(file)){
         // known project
         auto files = proj.value()->collect_files();
+        log::debug("Compiling file {} (project '{}')", file, proj.value()->name);
         compile_files(files);
     } else {
+        auto default_proj = workspace_->default_project();
         // default project
-        log::debug("File not in workspace {}, using default project", file);
+        log::debug("Compiling file {} (not in workspace -> using default project {})", file, default_proj->name);
         
-        auto files = workspace_->default_project()->collect_files();
+        auto files = default_proj->collect_files();
         workspace::File out_of_project_file(file);
         out_of_project_file.read();
         files.push_back(&out_of_project_file);
