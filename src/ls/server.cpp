@@ -98,9 +98,7 @@ void Server::setup_events() {
 
     message_handler_.add<lsp::notifications::Initialized>([this](lsp::notifications::Initialized::Params&&){
         log::debug("Received Initialized notification");
-
         reload_workspace();
-        // compile_files(workspace_->get_project_files());
     });
 
     // Shutdown ----------------------------------------------------------------------
@@ -121,26 +119,7 @@ void Server::setup_events() {
     message_handler_.add<lsp::notifications::TextDocument_DidOpen>([this](lsp::notifications::TextDocument_DidOpen::Params&& params) {
         log::debug("LSP Document Opened");
         auto path = std::string(params.textDocument.uri.path());
-        if(auto proj = workspace_->project_for_file(path)){
-            // known project
-            auto files = proj.value()->collect_files();
-            compile_files(files);
-        } else {
-            // default project
-            log::debug("File not in workspace {}, using default project", path);
-            
-            auto files = workspace_->default_project()->collect_files();
-            workspace::File out_of_project_file(path);
-            out_of_project_file.read();
-            files.push_back(&out_of_project_file);
-
-            // TODO for maintainer
-            // maybe file should not be a temporary here to avoid use after free errors
-            // though i don't think file text should be accessed after compile_files.
-            // However, you could imagine if we do incremental compilation / recompilation at a later stage,
-            // log / locator could try to access the file text, which is likely stored as a string_view
-            compile_files(files);
-        }
+        compile_file(path);
     });
     message_handler_.add<lsp::notifications::TextDocument_DidSave>([](lsp::notifications::TextDocument_DidSave::Params&& params) {
         log::debug("LSP Document Saved");
@@ -449,7 +428,26 @@ void Server::compile_files(std::span<const workspace::File*> files){
 }
 
 void Server::compile_file(const std::filesystem::path& file){
+    if(auto proj = workspace_->project_for_file(file)){
+        // known project
+        auto files = proj.value()->collect_files();
+        compile_files(files);
+    } else {
+        // default project
+        log::debug("File not in workspace {}, using default project", file);
+        
+        auto files = workspace_->default_project()->collect_files();
+        workspace::File out_of_project_file(file);
+        out_of_project_file.read();
+        files.push_back(&out_of_project_file);
 
+        // TODO for maintainer
+        // maybe file should not be a temporary here to avoid use after free errors
+        // though i don't think file text should be accessed after compile_files.
+        // However, you could imagine if we do incremental compilation / recompilation at a later stage,
+        // log / locator could try to access the file text, which is likely stored as a string_view
+        compile_files(files);
+    }
 }
 
 std::vector<lsp::Range> find_in_file(std::filesystem::path const& file, std::string_view literal){
