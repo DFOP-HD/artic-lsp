@@ -11,7 +11,8 @@
 #include "artic/ls/crash.h"
 #include "artic/ls/workspace.h"
 #include "lsp/types.h"
-#include "fstream"
+#include <fstream>
+#include <string_view>
 
 #ifndef ENABLE_JSON
 #error("JSON support is required")
@@ -451,70 +452,105 @@ void Server::compile_file(const std::filesystem::path& file){
 
 }
 
-void Server::reload_workspace(const std::string& active_file) {
-    log::debug("Reloading workspace configuration");
-    workspace::WorkspaceConfigLog log;
-    workspace_->reload(log);
-    // Clear previous diagnostics for project files
-    auto _ = message_handler_.sendRequest<lsp::requests::Workspace_Diagnostic_Refresh>();
+std::vector<lsp::Range> find_in_file(std::filesystem::path const& file, std::string_view literal){
+    std::vector<lsp::Range> ranges;
+    if(literal.empty()) return ranges;
+    std::ifstream ifs(file);
+    if (!ifs) return ranges;
 
+    std::string line;
+    lsp::uint line_number = 0;
+    while (std::getline(ifs, line)) {
+        size_t pos = line.find(literal);
+        while (pos != std::string::npos) {
+            ranges.push_back(lsp::Range{
+                lsp::Position{line_number, static_cast<lsp::uint>(pos)},
+                lsp::Position{line_number, static_cast<lsp::uint>(pos + literal.size())}
+            });
+            pos = line.find(literal, pos + 1);
+        }
+        line_number++;
+    }
+    return ranges;
+}
+
+void Server::publish_diagnostics(const workspace::ConfigLog& log) {
+    // Clear previous diagnostics for project files
+    using FileDiags = std::unordered_map<std::filesystem::path, std::vector<lsp::Diagnostic>>;
     
-    auto publish = [&](const std::string& path){
-        if (path.empty()) return;
-        std::vector<lsp::Diagnostic> diags;
-        auto makeDiag = [&](const workspace::WorkspaceConfigLog::Message& msg, lsp::DiagnosticSeverity sev, std::vector<lsp::Diagnostic>& diags) {
-            lsp::Diagnostic diag;
-            diag.message = msg.message;
-            diag.severity = sev;
-            
-            if (msg.context.has_value()) {
-                const auto& ctx = msg.context.value();
-                std::ifstream file(path);
-                int ctx_count = 0;
-                if (file) {
-                    std::string line;
-                    lsp::uint row = 0;
-                    while (std::getline(file, line)) {
-                        size_t pos = 0;
-                        while ((pos = line.find(ctx.literal, pos)) != std::string::npos) {
-                            lsp::Diagnostic pos_diag(diag);
-                            pos_diag.range = lsp::Range{
-                                lsp::Position{row, static_cast<lsp::uint>(pos)},
-                                lsp::Position{row, static_cast<lsp::uint>(pos + ctx.literal.size())}
-                            };
-                            diags.push_back(pos_diag);
-                            ctx_count++;
-                            pos += ctx.literal.size();
-                        }
-                        ++row;
-                    }
-                }
-                if(ctx_count > 0) return;
+    FileDiags fileDiags;
+    auto makeDiag = [&](
+        const workspace::ConfigLog::Message& msg, 
+        FileDiags& diags, 
+        std::optional<std::filesystem::path> display_in_include_of_other_file = std::nullopt
+    ) {
+        lsp::Diagnostic diag;
+        diag.message = msg.message;
+        diag.severity = msg.severity;
+        diag.range = lsp::Range{ lsp::Position{0,0}, lsp::Position{0,0} };
+        auto file = msg.file;
+        if(display_in_include_of_other_file) file = display_in_include_of_other_file.value();
+
+        int display_count = 0;
+        if(msg.context.has_value()) {
+            auto literal = msg.context.value().literal;
+            if(display_in_include_of_other_file) literal = "include-projects";
+
+            auto occurrences = find_in_file(file, literal);
+            for(auto& occ : occurrences) {
+                lsp::Diagnostic pos_diag(diag);
+                pos_diag.range = occ;
+                diags[file].push_back(pos_diag);
+                display_count++;
             }
-            
-            diag.range = lsp::Range{ lsp::Position{0,0}, lsp::Position{0,0} };
-            
-            diags.push_back(diag);
-        };
-        for (auto& e : log.errors) makeDiag(e, lsp::DiagnosticSeverity::Error, diags);
-        for (auto& w : log.warnings) makeDiag(w, lsp::DiagnosticSeverity::Warning, diags);
+        }
+        if(display_count == 0) diags[file].push_back(diag);
+    };
+
+    // create diagnostics
+    for (auto& e : log.messages) {
+        makeDiag(e, fileDiags);
+        if(e.severity == lsp::DiagnosticSeverity::Error) 
+            makeDiag(e, fileDiags, workspace_->workspace_config_path);
+    }
+
+    // Send diagnostics
+    for(auto& [file, diags] : fileDiags) {
         message_handler_.sendNotification<lsp::notifications::TextDocument_PublishDiagnostics>(
             lsp::notifications::TextDocument_PublishDiagnostics::Params {
-                .uri = lsp::FileUri::fromPath(path),
+                .uri = lsp::FileUri::fromPath(file.string()),
                 .diagnostics = diags
             }
         );
-    };
-    publish(workspace_->workspace_config_path);
-    publish(workspace_->global_config_path);
-    
-    bool print_to_console = false;
-    if(print_to_console){
-        log::debug("Reloaded Workspace with {} errors and {} warnings", log.errors.size(), log.warnings.size());
-        for (auto& e : log.errors) std::clog << "Error: " << e.message << std::endl;
-        for (auto& w : log.warnings) std::clog << "Warning: " << w.message << std::endl;
+    }
+}
+
+void Server::reload_workspace(const std::string& active_file) {
+    log::debug("Reloading workspace configuration");
+    workspace::ConfigLog log;
+    workspace_->reload(log);
+
+    bool print_to_console = true;
+    if(print_to_console) {
+        log::debug("Reloaded Workspace");
+        log::debug("--- Config Log ---");
+        for (auto& e : log.messages) {
+            if(e.severity > lsp::DiagnosticSeverity::Warning) continue;
+            auto s = 
+                (e.severity == lsp::DiagnosticSeverity::Error)        ? "Error" :
+                (e.severity == lsp::DiagnosticSeverity::Warning)      ? "Warning" : 
+                (e.severity == lsp::DiagnosticSeverity::Information)  ? "Info" : 
+                (e.severity == lsp::DiagnosticSeverity::Hint)         ? "Hint" : 
+                                                                        "Unknown";
+
+            log::debug("[{}] {}: {}", s, e.file, e.message);
+        }
+        log::debug("--- Config Log ---");
         workspace_->projects_.print();
     }
+
+    // This is somehow blocking. TODO investigate
+    publish_diagnostics(log);
 }
 
 } // namespace artic::ls

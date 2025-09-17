@@ -1,6 +1,7 @@
 #ifndef ARTIC_LS_PROJECT_H
 #define ARTIC_LS_PROJECT_H
 
+#include "lsp/types.h"
 #include <vector>
 #include <string>
 #include <optional>
@@ -33,32 +34,35 @@ struct Project {
     std::vector<const File*> collect_files() const;
 };
 
-struct WorkspaceConfigLog {
+struct ConfigLog {
+    using Severity = lsp::DiagnosticSeverity;
     struct Context {
         std::string literal;
     };
     struct Message {
         std::string message;
+        Severity severity;
+
+        std::filesystem::path file;
         std::optional<Context> context;
     };
-    std::optional<std::string> override_context;
-    std::vector<Message> errors;
-    std::vector<Message> warnings;
+    std::filesystem::path file_context;
+    std::vector<Message> messages;
 
-    void error(std::string msg) { errors.push_back({std::move(msg), make_context()}); }
-    void warn (std::string msg) { warnings.push_back({std::move(msg), make_context()}); }
-
-    void error(std::string msg, std::string context) { errors.push_back({std::move(msg), make_context(std::move(context))}); }
-    void warn (std::string msg, std::string context) { warnings.push_back({std::move(msg), make_context(std::move(context))}); }
+    void error(std::string msg, std::optional<std::string> context=std::nullopt) { messages.push_back(make_message(Severity::Error,       std::move(msg), context)); }
+    void warn (std::string msg, std::optional<std::string> context=std::nullopt) { messages.push_back(make_message(Severity::Warning,     std::move(msg), context)); }
+    void info (std::string msg, std::optional<std::string> context=std::nullopt) { messages.push_back(make_message(Severity::Information, std::move(msg), context)); }
 
 private:
-    std::optional<Context> make_context() {
-        if(override_context) return Context{override_context.value()};
-        return std::nullopt;
-    }
-    Context make_context(std::string&& literal) {
-        if(override_context) return Context{override_context.value()};
-        else return {literal};
+    Message make_message(Severity s, std::string msg, std::optional<std::string> context) {
+        return Message{
+            .message=std::move(msg),
+            .severity=s,
+            .file=file_context, 
+            .context= context 
+                ? std::make_optional(Context{context.value()}) 
+                : std::nullopt
+        };
     }
 };
 
@@ -79,7 +83,7 @@ public:
         : workspace_root(workspace_root), workspace_config_path(workspace_config_path), global_config_path(global_config_path)
     {}
 
-    void reload(WorkspaceConfigLog& log);
+    void reload(ConfigLog& log);
 
     std::optional<std::shared_ptr<Project>> project_for_file(const std::filesystem::path& file) const;
     std::shared_ptr<Project> default_project() const { 

@@ -53,10 +53,11 @@ static std::filesystem::path to_absolute_path(const std::filesystem::path& base_
     if(path.starts_with("/"))
         return path;
 
-    return base_dir / path;
+    return base_dir/path;
 }
 
-static std::optional<ConfigDocument> parse_config(const std::filesystem::path& config_path, WorkspaceConfigLog& log) {
+static std::optional<ConfigDocument> parse_config(const std::filesystem::path& config_path, ConfigLog& log) {
+    log.file_context = config_path;
     if(config_path.empty()){
         log.error("Config file path is empty", "include-projects");
         return std::nullopt;
@@ -128,6 +129,7 @@ static std::optional<ConfigDocument> parse_config(const std::filesystem::path& c
                     include.is_optional = true;
                 } 
                 include.path = to_absolute_path(config_path.parent_path(), path);
+                include.path = std::filesystem::weakly_canonical(include.path);
 
                 doc.includes.push_back(std::move(include));
             }
@@ -147,7 +149,7 @@ static std::optional<ConfigDocument> parse_config(const std::filesystem::path& c
 // Workspace Helpers ----------------------------------------------------------------------
 
 struct CollectProjectsData {
-    WorkspaceConfigLog& log;
+    ConfigLog& log;
     std::map<Project::Identifier, config::ProjectDefinition>& projects;
     std::unordered_set<std::filesystem::path> visited_configs;
 };
@@ -155,6 +157,8 @@ struct CollectProjectsData {
 static void collect_projects_recursive(const config::ConfigDocument& config, CollectProjectsData& data, int depth = 0) {
     if(data.visited_configs.contains(config.path)) return;
     data.visited_configs.insert(config.path);
+    
+    data.log.file_context = config.path;
 
     // Register Projects
     for (const auto& proj : config.projects) {
@@ -172,12 +176,12 @@ static void collect_projects_recursive(const config::ConfigDocument& config, Col
         data.projects[proj.name] = proj;
         data.projects[proj.name].depth = depth;
     }
-    data.log.override_context = "include-projects";
     // Recurse included configs
     for (const auto& include : config.includes) {
         if (!std::filesystem::exists(include.path)) {
             if(include.is_optional) continue;
-        } 
+        }
+
         if(auto include_config = config::parse_config(include.path, data.log)) {
             collect_projects_recursive(include_config.value(), data, depth+1);
         }
@@ -188,7 +192,7 @@ static int match_pattern(
     const std::string& pattern, bool recursive, 
     const std::filesystem::path& root_dir, 
     std::unordered_set<std::filesystem::path>& matched_files,
-    WorkspaceConfigLog& log
+    ConfigLog& log
 ) {
     std::error_code ec;
     std::filesystem::path base_dir = root_dir;
@@ -258,8 +262,10 @@ static int match_pattern(
 static std::shared_ptr<Project> instantiate_project(
     const config::ProjectDefinition& proj_def, 
     std::unordered_map<std::filesystem::path, std::shared_ptr<File>>& tracked_files,
-    WorkspaceConfigLog& log
+    ConfigLog& log
 ) {
+    log.file_context = proj_def.origin;
+
     // evaluate file patterns
     std::vector<std::string> include_patterns;
     std::vector<std::string> exclude_patterns;
@@ -282,8 +288,19 @@ static std::shared_ptr<Project> instantiate_project(
         int matched_count = match_pattern(pattern, recursive, root_dir, matched_files, log);
         // log::debug("Pattern {} matched {} files", pattern, matched_count);
         if (matched_count == 0) {
-            log.warn("File pattern '" + pattern + "' matches 0 files", pattern);
+            log.warn("0 files", pattern);
+        } else {
+            log.info(std::to_string(matched_count) + " files matched", pattern);
         }
+    }
+
+    {
+        std::ostringstream s;
+        s << matched_files.size() << " files:" << std::endl;
+        for(const auto& file : matched_files) {
+            s << "- " << std::filesystem::relative(file, root_dir).string() << " " << std::endl;
+        }
+        log.info(s.str(), "files");
     }
 
     // Remove files matching any exclude pattern
@@ -333,14 +350,15 @@ static std::shared_ptr<Project> instantiate_project(
 
 // Workspace --------------------------------------------------------------------------
 
-void Workspace::reload(WorkspaceConfigLog& log) {
+void Workspace::reload(ConfigLog& log) {
     projects_ = ProjectRegistry();
 
     std::map<Project::Identifier, config::ProjectDefinition> project_defs;
     std::optional<config::ProjectDefinition> default_project;
     CollectProjectsData data {.log = log, .projects=project_defs };
 
-    log.override_context = "include-projects";
+    log.file_context = workspace_config_path;
+
     // Discover projects from global config recursively
     if(!global_config_path.empty()){
         if(auto global_config = config::parse_config(global_config_path, log)) {
@@ -349,11 +367,11 @@ void Workspace::reload(WorkspaceConfigLog& log) {
                 default_project = dp.value();
             }
         }
+        log.info("global config: " + global_config_path.string(), "<global>");
     } else {
         log.warn("Could not find global config file", "include-projects");
     }
         
-    log.override_context = std::nullopt;
     // Discover projects from local config recursively
     if(!workspace_config_path.empty())
         if(auto local_config = config::parse_config(workspace_config_path, log)) {
@@ -377,9 +395,6 @@ void Workspace::reload(WorkspaceConfigLog& log) {
 
     // convert project definitions to project instances
     for (const auto& [id, def] : project_defs) {
-        log.override_context = def.origin == workspace_config_path
-            ? std::nullopt
-            : std::make_optional("include-projects");
         projects[id] = {
             .project = instantiate_project(def, projects_.tracked_files, log), 
             .dependencies = std::move(def.dependencies)
@@ -387,27 +402,31 @@ void Workspace::reload(WorkspaceConfigLog& log) {
     }
     
     // resolve dependencies
-    log.override_context = std::nullopt;
     for (auto& [id, p] : projects) {
         for (auto& dep_id : p.dependencies) {
             if(!projects.contains(dep_id)) {
+                log.file_context = p.project->origin;
                 log.error("failed to resolve dependency " + dep_id + " for project " + p.project->name, p.project->name);
                 continue;
+            } else {
             }
             auto& dep = projects.at(dep_id).project;
+            if(dep->origin == p.project->origin)
+                log.info("found in this config", dep_id);
+            else
+                log.info("found in " + dep->origin.string(), dep_id);
             p.project->dependencies.push_back(dep);        
         }
 
         projects_.all_projects.push_back(p.project);
     }
 
-
     // register default project
-    log.override_context = "<global>";
     if(auto& dp = default_project){
         auto project = instantiate_project(dp.value(), projects_.tracked_files, log);
         for (auto& dep_id : dp->dependencies) {
             if(!projects.contains(dep_id)) {
+                log.file_context = dp->origin;
                 log.error("failed to resolve dependency " + dep_id + " for project " + project->name, dep_id);
                 continue;
             }
@@ -423,8 +442,7 @@ void Workspace::reload(WorkspaceConfigLog& log) {
         project-> dependencies = {};
         projects_.default_project = project;
     }
-
-    log.override_context = std::nullopt;
+    log.file_context = "";
 }
 
 bool Workspace::is_file_part_of_project(const Project& project, const std::filesystem::path& file) const {

@@ -39,6 +39,7 @@ private:
     std::unique_ptr<compiler::CompileResult> last_compilation_result_;
 
     void reload_workspace(const std::string& active_file = {});
+    void publish_diagnostics(const workspace::ConfigLog& log);
 };
 
 } // namespace artic::ls
