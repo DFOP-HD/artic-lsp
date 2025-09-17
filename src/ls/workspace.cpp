@@ -57,16 +57,17 @@ static std::filesystem::path to_absolute_path(const std::filesystem::path& base_
     return base_dir/path;
 }
 
-static std::optional<ConfigDocument> parse_config(const std::filesystem::path& config_path, ConfigLog& log) {
-    log.file_context = config_path;
+static std::optional<ConfigDocument> parse_config(const std::filesystem::path& config_path, ConfigLog& log, std::optional<std::string> raw_path_context = std::nullopt) {
     if(config_path.empty()){
         log.error("Config file path is empty", "include-projects");
         return std::nullopt;
     }
     if (!std::filesystem::exists(config_path)) {
-        log.error("Config file does not exist: " + config_path.string(), config_path.string());
+        auto context = raw_path_context.value_or(config_path.string());
+        log.error("Config file does not exist: \"" + config_path.string() + "\"", context);
         return std::nullopt;
     }
+    log.file_context = config_path;
     try {
         nlohmann::json j; 
         std::ifstream is(config_path);
@@ -125,13 +126,13 @@ static std::optional<ConfigDocument> parse_config(const std::filesystem::path& c
                     continue;
                 }
                 IncludeConfig include;
+                include.raw_path_string = path;
                 if(path.ends_with('?')){
                     path = path.substr(0, path.size()-1);
                     include.is_optional = true;
                 } 
                 include.path = to_absolute_path(config_path.parent_path(), path);
                 include.path = std::filesystem::weakly_canonical(include.path);
-                include.raw_path_string = path;
 
                 doc.includes.push_back(std::move(include));
             }
@@ -188,7 +189,7 @@ static void collect_projects_recursive(const config::ConfigDocument& config, Col
             if(include.is_optional) continue;
         }
         
-        if(auto include_config = config::parse_config(include.path, log)) {
+        if(auto include_config = config::parse_config(include.path, log, include.raw_path_string)) {
             collect_projects_recursive(include_config.value(), data, depth+1);
             
             log.file_context = config.path;
@@ -466,7 +467,7 @@ void Workspace::reload(ConfigLog& log) {
                 log_project_info(*dep);
                 p.project->dependencies.push_back(dep);   
             } else {
-                log.error("failed to resolve dependency " + dep_id + " for project " + p.project->name, p.project->name);
+                log.error("Failed to resolve dependency " + dep_id + " for project " + p.project->name, p.project->name);
             }
         }
 
@@ -479,7 +480,7 @@ void Workspace::reload(ConfigLog& log) {
         for (auto& dep_id : dp->dependencies) {
             if(!projects.contains(dep_id)) {
                 log.file_context = dp->origin;
-                log.error("failed to resolve dependency " + dep_id + " for project " + project->name, dep_id);
+                log.error("Failed to resolve dependency " + dep_id + " for default project " + project->name, dep_id);
                 continue;
             }
             auto& dep = projects.at(dep_id).project;
