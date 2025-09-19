@@ -209,52 +209,57 @@ static void collect_projects_recursive(const config::ConfigDocument& config, Col
     }
 }
 
-static int match_pattern(
+static int expand_file_pattern(
     const std::string& pattern, bool recursive, 
     const std::filesystem::path& root_dir, 
     std::unordered_set<std::filesystem::path>& matched_files,
     ConfigLog& log
 ) {
+    if(pattern.empty())
+        return 0;
+
     std::error_code ec;
     std::filesystem::path base_dir = root_dir;
-    std::string glob = pattern;
+    std::string pat = pattern;
 
     // Expand ~ to $HOME
-    if (!glob.empty() && glob[0] == '~') {
+    if (pat[0] == '~') {
         const char* home = std::getenv("HOME");
         if (home) {
-            glob = std::string(home) + glob.substr(1);
-            base_dir = "";
+            pat = pat.substr(1);
+            base_dir = home;
+        } else {
+            log.warn("Cannot expand ~ in pattern: " + pattern + "$HOME is undefined", pattern);
+            return 0;
         }
     }
 
     // If pattern is relative, resolve to base_dir
-    std::filesystem::path search_path = base_dir;
-    if (!glob.empty() && glob[0] == '/') {
-        search_path = "";
+    if (pat[0] == '/') {
+        base_dir = "";
     }
 
     // Split pattern into directory and filename part
-    auto pos = glob.find_last_of("/\\");
-    std::string dir_part = pos != std::string::npos ? glob.substr(0, pos) : "";
-    std::string file_part = pos != std::string::npos ? glob.substr(pos + 1) : glob;
+    auto pos = pat.find_last_of("/\\");
+    std::string dir_part = pos != std::string::npos ? pat.substr(0, pos) : "";
+    std::string file_part = pos != std::string::npos ? pat.substr(pos + 1) : pat;
 
     // Handle recursive **
-    bool has_recursive = glob.find("**") != std::string::npos;
-    std::filesystem::path walk_dir = search_path / dir_part;
+    bool has_recursive = pat.find("**") != std::string::npos;
+    std::filesystem::path walk_dir = base_dir / dir_part;
 
     int matched_count = 0;
     auto match_entry = [&](const std::filesystem::directory_entry& entry){
         if (!entry.is_regular_file()) return;
         auto rel = std::filesystem::relative(entry.path(), root_dir, ec);
-        if (fnmatch(glob.c_str(), rel.string().c_str(), 0) == 0) {
+        if (fnmatch(pat.c_str(), rel.string().c_str(), 0) == 0) {
             matched_files.insert(entry.path());
             matched_count++;
         }
     };
     if (has_recursive) {
         // Only one ** allowed
-        if (std::count(glob.begin(), glob.end(), '*') > 2) {
+        if (std::count(pat.begin(), pat.end(), '*') > 2) {
             log.warn("Multiple recursive wildcards (**) are not supported in pattern: " + pattern, pattern);
             return 0;
         }
@@ -262,14 +267,14 @@ static int match_pattern(
         auto recursive_pos = dir_part.find("**");
         std::filesystem::path recursive_base = walk_dir;
         if (recursive_pos != std::string::npos) {
-            recursive_base = search_path / dir_part.substr(0, recursive_pos);
+            recursive_base = base_dir / dir_part.substr(0, recursive_pos);
         }
         for (auto& entry : std::filesystem::recursive_directory_iterator(recursive_base, ec)) {
             match_entry(entry);
         }
     } else {
         // Non-recursive: walk only one directory
-        std::filesystem::path dir_to_walk = walk_dir.empty() ? search_path : walk_dir;
+        std::filesystem::path dir_to_walk = walk_dir.empty() ? base_dir : walk_dir;
         if (std::filesystem::exists(dir_to_walk)) {
             for (auto& entry : std::filesystem::directory_iterator(dir_to_walk, ec)) {
                 match_entry(entry);
@@ -306,7 +311,7 @@ static std::shared_ptr<Project> instantiate_project(
     // Evaluate include patterns
     for (const auto& pattern : include_patterns) {
         bool recursive = pattern.find("**") != std::string::npos;
-        int matched_count = match_pattern(pattern, recursive, root_dir, matched_files, log);
+        int matched_count = expand_file_pattern(pattern, recursive, root_dir, matched_files, log);
         // log::debug("Pattern {} matched {} files", pattern, matched_count);
         if (matched_count == 0) {
             log.warn("0 files", pattern);
