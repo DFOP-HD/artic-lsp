@@ -6,7 +6,6 @@
 #include <cstring>
 #include <cassert>
 #include <utility>
-#include <string_view>
 #include <sstream>
 
 #ifdef COLORIZE

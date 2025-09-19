@@ -5,7 +5,6 @@
 #include <fstream>
 #include <filesystem>
 #include <fnmatch.h>
-#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -42,113 +41,28 @@ void File::read() const {
     }
 }
 
-// Config --------------------------------------------------------------------
+// Project --------------------------------------------------------------------
 
-namespace config {
-
-static std::filesystem::path to_absolute_path(const std::filesystem::path& base_dir, std::string_view path) {
-    if(path.starts_with("~")) {
-        static const char* home = std::getenv("HOME");
-        if(home) return std::filesystem::path(home) / path.substr(1);
-        else return "";
+std::vector<const File*> Project::collect_files() const {
+    std::unordered_set<const File*> result;
+    for (const auto& file : files) {
+        result.insert(file.get());
     }
-    if(path.starts_with("/"))
-        return path;
-
-    return base_dir/path;
+    for (const auto& dependency : dependencies){
+        auto dep_files = dependency->collect_files();
+        result.insert(dep_files.begin(), dep_files.end());
+    }
+    std::vector res(result.begin(), result.end());
+    return res;
 }
 
-static std::optional<ConfigDocument> parse_config(const std::filesystem::path& config_path, ConfigLog& log, std::optional<std::string> raw_path_context = std::nullopt) {
-    if(config_path.empty()){
-        log.error("Config file path is empty", "include-projects");
-        return std::nullopt;
-    }
-    if (!std::filesystem::exists(config_path)) {
-        auto context = raw_path_context.value_or(config_path.string());
-        log.error("Config file does not exist: \"" + config_path.string() + "\"", context);
-        return std::nullopt;
-    }
-    log.file_context = config_path;
-    try {
-        nlohmann::json j; 
-        std::ifstream is(config_path);
-        is >> j;
-
-        ConfigDocument doc;
-        doc.path = config_path;
-        if (!j.contains("artic-config")) {
-            log.error(
-                "Missing artic-config header in " + config_path.string()
-                + "\nExample: " + nlohmann::json{{"artic-config", "1.0"}}.dump(),
-                "projects"
-            );
-            return std::nullopt;
-        }
-        doc.version = j["artic-config"].get<std::string>();
-        if (doc.version != "1.0") {
-            log.warn("Unsupported artic-config version in " + config_path.string(), "artic-config");
-        }
-
-        auto parse_project = [&](const nlohmann::json& pj) -> std::optional<ProjectDefinition> {
-            ProjectDefinition p;
-            if (!pj.contains("name")) { 
-                log.error(
-                    "Project without name in " + config_path.string()
-                    + "\nExample: " + nlohmann::json{{"name", "my_project"}}.dump(),
-                    "projects"
-                );
-                return std::nullopt;
-            }
-            p.name = pj["name"].get<std::string>();
-
-            p.root_dir =      pj.value<std::string>("folder", "");
-            p.dependencies =  pj.value<std::vector<std::string>>("dependencies", {});
-            p.file_patterns = pj.value<std::vector<std::string>>("files", {});
-            p.origin = config_path;
-            return p;
-        };
-
-        if (auto pj = j.find("projects"); pj != j.end()) {
-            for (auto& pj : *pj) {
-                if(auto pd = parse_project(pj)){
-                    doc.projects.push_back(pd.value());
-                }
-            }
-        }
-        if (auto dpj = j.find("default-project"); dpj != j.end()) {
-            doc.default_project = parse_project(*dpj);
-        }
-        if (j.contains("include-projects")) {
-            bool missing_global = true;
-            for (auto& incj : j["include-projects"]) {
-                auto path = incj.get<std::string>();
-                if(missing_global && path == "<global>"){
-                    missing_global = false;
-                    continue;
-                }
-                IncludeConfig include;
-                include.raw_path_string = path;
-                if(path.ends_with('?')){
-                    path = path.substr(0, path.size()-1);
-                    include.is_optional = true;
-                } 
-                include.path = to_absolute_path(config_path.parent_path(), path);
-                include.path = std::filesystem::weakly_canonical(include.path);
-
-                doc.includes.push_back(std::move(include));
-            }
-            if(missing_global) {
-                log.warn("'include-projects' should contain '<global>' to improve readability as global projects are implicitly included", "include-projects");
-            }
-        }
-        return doc;
-    } catch (const std::exception& e) {
-        log.error(std::string("Failed to parse ") + config_path.string() + ": " + e.what());
-        return std::nullopt;
-    }
+bool Project::uses_file(const std::filesystem::path& file) const {
+    for (const auto& f : files)
+        if(f->path == file) return true;
+    for (const auto& dep : dependencies)
+        if(dep->uses_file(file)) return true;
+    return false;
 }
-
-} // config
 
 // Workspace Helpers ----------------------------------------------------------------------
 
@@ -190,7 +104,7 @@ static void collect_projects_recursive(const config::ConfigDocument& config, Col
             if(include.is_optional) continue;
         }
         
-        if(auto include_config = config::parse_config(include.path, log, include.raw_path_string)) {
+        if(auto include_config = config::ConfigDocument::parse(include, log)) {
             collect_projects_recursive(include_config.value(), data, depth+1);
             
             log.file_context = config.path;
@@ -404,48 +318,73 @@ static std::shared_ptr<Project> instantiate_project(
 
 // Workspace --------------------------------------------------------------------------
 
+std::optional<std::shared_ptr<Project>> Workspace::project_for_file(const std::filesystem::path& file) const {
+    // try active project
+    if(active_project.has_value()){
+        auto active = std::find_if(projects_.all_projects.begin(), projects_.all_projects.end(), [&](const auto& project){
+            return project->name == active_project.value();
+        });
+        if(active != projects_.all_projects.end() && (*active)->uses_file(file)){
+            return *active;
+        }
+    }
+
+    // if not in active project, try next best project
+    for (const auto& project : projects_.all_projects) {
+        for (const auto& f : project->files) {
+            // do not use recursive check, as dependencies are also contained in all_projects
+            if (f->path == file) { 
+                return project;
+            }
+        }
+    }
+
+    // no project can be found -> may need to use default project
+    return std::nullopt;
+}
+
 void Workspace::reload(ConfigLog& log) {
     projects_ = ProjectRegistry();
 
     std::map<Project::Identifier, config::ProjectDefinition> project_defs;
     std::optional<config::ProjectDefinition> default_project;
     CollectProjectsData data {.log = log, .projects=project_defs };
-
+    config::IncludeConfig include_global { .path = global_config_path,    .raw_path_string = "<global>",            .is_optional = false };
+    config::IncludeConfig include_local  { .path = workspace_config_path, .raw_path_string = workspace_config_path, .is_optional = false };
+    
     log.file_context = workspace_config_path;
 
     // Discover projects from global config recursively
-    if(!global_config_path.empty()){
-        if(auto global_config = config::parse_config(global_config_path, log)) {
+    if(global_config_path.empty()) {
+        log.warn("Missing global config: path specified in settings", "<global>");
+    }
+    else {
+        if(auto global_config = config::ConfigDocument::parse(include_global, log)) {
             collect_projects_recursive(global_config.value(), data);
             if(auto& dp = global_config->default_project){
                 default_project = dp.value();
             }
         }
-        log.info("global config: " + global_config_path.string(), "<global>");
-    } else {
-        log.warn("Could not find global config file", "<global>");
+        log.info("Global config: " + global_config_path.string(), "<global>");
     }
-        
-    // Discover projects from local config recursively
-    if(!workspace_config_path.empty())
-        if(auto local_config = config::parse_config(workspace_config_path, log)) {
-            collect_projects_recursive(local_config.value(), data);
-            if(auto& dp = local_config->default_project){
-                default_project = dp.value();
-            }
-            if(local_config->projects.empty()) {
-                active_project = std::nullopt;
-            } else {
-                active_project = local_config->projects.front().name;
-            }
-        }
 
-    struct IntermediateProject {
+    // Discover projects from local config recursively
+    if(workspace_config_path.empty()) {
+        log.warn("Missing config: did not find artic.json in workspace");
+    }
+    else if(auto local_config = config::ConfigDocument::parse(include_local, log)){
+        collect_projects_recursive(local_config.value(), data);
+        if(auto& dp = local_config->default_project){
+            default_project = dp.value();
+        }
+        active_project = local_config->projects.empty() ? std::nullopt : std::make_optional(local_config->projects.front().name);
+    }
+
+    struct Project_WithUnresolvedDependencies {
         std::shared_ptr<Project> project;
         std::vector<Project::Identifier> dependencies;
     };
-
-    std::map<Project::Identifier, IntermediateProject> projects;
+    std::map<Project::Identifier, Project_WithUnresolvedDependencies> projects;
 
     // convert project definitions to project instances
     for (const auto& [id, def] : project_defs) {
@@ -533,53 +472,7 @@ void Workspace::reload(ConfigLog& log) {
     log.file_context = "";
 }
 
-bool Workspace::is_file_part_of_project(const Project& project, const std::filesystem::path& file) const {
-    for (auto* proj_file : project.collect_files()) {
-        if(proj_file->path == file) return true;
-    }
-    return false;
-}
-
-std::optional<std::shared_ptr<Project>> Workspace::project_for_file(const std::filesystem::path& file) const {
-    // try active project
-    if(active_project.has_value()){
-        auto active = std::find_if(projects_.all_projects.begin(), projects_.all_projects.end(), [&](const auto& project){
-            if(project->name == active_project.value()){
-                return true;
-            }
-            return false;
-        });
-        if(active != projects_.all_projects.end()){
-            if(is_file_part_of_project(**active, file))
-                return *active;
-        }
-    }
-
-    // if not in active project, try next best project
-    for (const auto& project : projects_.all_projects) {
-        for (const auto& f : project->files) {
-            if (f->path == file) {
-                return project;
-            }
-        }
-    }
-
-    // no project can be found
-    return std::nullopt;
-}
-
-std::vector<const File*> Project::collect_files() const {
-    std::unordered_set<const File*> result;
-    for (const auto& file : files) {
-        result.insert(file.get());
-    }
-    for (const auto& dependency : dependencies){
-        auto dep_files = dependency->collect_files();
-        result.insert(dep_files.begin(), dep_files.end());
-    }
-    std::vector res(result.begin(), result.end());
-    return res;
-}
+// Project Registry --------------------------------------------------------------------
 
 static inline void print_project(const Project& proj, int ind = 0){
     auto indent = [](int i){ 
@@ -627,5 +520,113 @@ void ProjectRegistry::print() const {
     log::debug("--- Project Registry ---");
     std::clog << std::endl;
 }
+
+// Config --------------------------------------------------------------------
+
+namespace config {
+
+static std::filesystem::path to_absolute_path(const std::filesystem::path& base_dir, std::string_view path) {
+    if(path.starts_with("~")) {
+        static const char* home = std::getenv("HOME");
+        if(home) 
+            return std::filesystem::path(home) / path.substr(1);
+        else 
+            return path.substr(1); // cannot expand ~
+    }
+    if(path.starts_with("/"))
+        return path;
+
+    return base_dir/path;
+}
+
+std::optional<ConfigDocument> ConfigDocument::parse(const IncludeConfig& config, ConfigLog& log) {
+    if(config.path.empty()){
+        log.error("Config file path is empty", "include-projects");
+        return std::nullopt;
+    }
+    if (!std::filesystem::exists(config.path)) {
+        if(!config.is_optional) log.error("Config file does not exist: \"" + config.path.string() + "\"", config.raw_path_string);
+        return std::nullopt;
+    }
+    log.file_context = config.path;
+    try {
+        nlohmann::json j; 
+        std::ifstream is(config.path);
+        is >> j;
+
+        ConfigDocument doc;
+        doc.path = config.path;
+        if (!j.contains("artic-config")) {
+            log.error(
+                "Missing artic-config header\n"
+                "Example: " + nlohmann::json{{"artic-config", "1.0"}}.dump()
+            );
+            return std::nullopt;
+        }
+        doc.version = j["artic-config"].get<std::string>();
+        if (doc.version != "1.0") {
+            log.warn("Unsupported artic-config version (Should be 1.0)", "artic-config");
+        }
+
+        auto parse_project = [&](const nlohmann::json& pj) -> std::optional<ProjectDefinition> {
+            ProjectDefinition p;
+            if (!pj.contains("name")) { 
+                log.error(
+                    "Every project must have a name"
+                    "\nExample: " + nlohmann::json{{"name", "my_project"}}.dump(),
+                    "projects"
+                );
+                return std::nullopt;
+            }
+            p.name = pj["name"].get<std::string>();
+
+            p.root_dir =      pj.value<std::string>("folder", "");
+            p.dependencies =  pj.value<std::vector<std::string>>("dependencies", {});
+            p.file_patterns = pj.value<std::vector<std::string>>("files", {});
+            p.origin = config.path;
+            return p;
+        };
+
+        if (auto pj = j.find("projects"); pj != j.end()) {
+            for (auto& pj : *pj) {
+                if(auto pd = parse_project(pj)){
+                    doc.projects.push_back(pd.value());
+                }
+            }
+        }
+        if (auto dpj = j.find("default-project"); dpj != j.end()) {
+            doc.default_project = parse_project(*dpj);
+        }
+        if (j.contains("include-projects")) {
+            bool missing_global = true;
+            for (auto& incj : j["include-projects"]) {
+                auto path = incj.get<std::string>();
+                if(missing_global && path == "<global>"){
+                    missing_global = false;
+                    continue;
+                }
+                IncludeConfig include;
+                include.raw_path_string = path;
+                if(path.ends_with('?')){
+                    path = path.substr(0, path.size()-1);
+                    include.is_optional = true;
+                } 
+                include.path = to_absolute_path(config.path.parent_path(), path);
+                include.path = std::filesystem::weakly_canonical(include.path);
+
+                doc.includes.push_back(std::move(include));
+            }
+            if(missing_global) {
+                log.warn("'include-projects' should contain '<global>' to improve readability as global projects are implicitly included", "include-projects");
+            }
+        }
+        return doc;
+    } catch (const std::exception& e) {
+        log.error(std::string("Failed to parse json ") + config.path.string() + ": " + e.what());
+        return std::nullopt;
+    }
+}
+
+} // config
 
 } // namespace artic::ls

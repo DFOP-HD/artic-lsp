@@ -6,7 +6,6 @@
 #include "artic/log.h"
 #include "artic/ast.h"
 #include <cctype>
-#include <unordered_set>
 
 #include "artic/ls/crash.h"
 #include "artic/ls/workspace.h"

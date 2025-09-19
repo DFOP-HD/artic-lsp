@@ -32,6 +32,41 @@ struct Project {
     std::vector<std::shared_ptr<Project>> dependencies;
 
     std::vector<const File*> collect_files() const;
+    bool uses_file(const std::filesystem::path& file) const;
+};
+
+struct ConfigLog;
+struct ProjectRegistry {
+    std::shared_ptr<Project> default_project;
+    std::vector<std::shared_ptr<Project>>   all_projects;
+    std::unordered_map<std::filesystem::path, std::shared_ptr<File>> tracked_files;
+
+    void print() const;
+};
+
+class Workspace {
+public:
+    Workspace(
+        const std::filesystem::path& workspace_root,
+        const std::filesystem::path& workspace_config_path = {},
+        const std::filesystem::path& global_config_path = {})   
+        : workspace_root(workspace_root), workspace_config_path(workspace_config_path), global_config_path(global_config_path)
+    {}
+
+    void reload(ConfigLog& log);
+
+    std::optional<std::shared_ptr<Project>> project_for_file(const std::filesystem::path& file) const;
+    std::shared_ptr<Project> default_project() const { return projects_.default_project; }
+    
+    std::optional<Project::Identifier> active_project;
+
+    std::filesystem::path workspace_root;
+    std::filesystem::path workspace_config_path;
+    std::filesystem::path global_config_path;
+    ProjectRegistry projects_;
+
+private:
+    bool is_file_part_of_project(const Project& project, const std::filesystem::path& file) const;
 };
 
 struct ConfigLog {
@@ -68,42 +103,6 @@ private:
         };
     }
 };
-
-struct ProjectRegistry {
-    std::shared_ptr<Project> default_project;
-    std::vector<std::shared_ptr<Project>>   all_projects;
-    std::unordered_map<std::filesystem::path, std::shared_ptr<File>> tracked_files;
-
-    void print() const;
-};
-
-class Workspace {
-public:
-    Workspace(
-        const std::filesystem::path& workspace_root,
-        const std::filesystem::path& workspace_config_path = {},
-        const std::filesystem::path& global_config_path = {})   
-        : workspace_root(workspace_root), workspace_config_path(workspace_config_path), global_config_path(global_config_path)
-    {}
-
-    void reload(ConfigLog& log);
-
-    std::optional<std::shared_ptr<Project>> project_for_file(const std::filesystem::path& file) const;
-    std::shared_ptr<Project> default_project() const { 
-        return projects_.default_project; 
-    }
-    
-    std::optional<Project::Identifier> active_project;
-
-    std::filesystem::path workspace_root;
-    std::filesystem::path workspace_config_path;
-    std::filesystem::path global_config_path;
-    ProjectRegistry projects_;
-
-private:
-    bool is_file_part_of_project(const Project& project, const std::filesystem::path& file) const;
-};
-
 
 namespace config {
 
@@ -143,6 +142,8 @@ struct ConfigDocument {
     std::optional<ProjectDefinition> default_project;
     std::vector<IncludeConfig>       includes;
     std::filesystem::path            path;
+    
+    static std::optional<ConfigDocument> parse(const IncludeConfig& config, ConfigLog& log);
 };
 
 } // namespace config
