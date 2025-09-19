@@ -12,6 +12,7 @@
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
+#include <regex>
 
 #include <nlohmann/json.hpp>
 
@@ -208,81 +209,109 @@ static void collect_projects_recursive(const config::ConfigDocument& config, Col
         }
     }
 }
+// Convert a glob pattern (with *, **, ?, and path separators) into a regex.
+// This is a simple translator that treats '/' as the path separator and
+// translates:
+//  - *  -> [^/]*          (any sequence of non-slash characters)
+//  - ** -> .*              (any sequence across subdirectories)
+//  - ?  -> [^/]            (single non-slash character)
+//  - Other regex metacharacters are escaped
+static inline std::string glob_to_regex(const std::string& glob) {
+    std::string regex;
+    regex.reserve(glob.size() * 2);
 
-static int expand_file_pattern(
-    const std::string& pattern, bool recursive, 
-    const std::filesystem::path& root_dir, 
-    std::unordered_set<std::filesystem::path>& matched_files,
-    ConfigLog& log
-) {
-    if(pattern.empty())
-        return 0;
-
-    std::error_code ec;
-    std::filesystem::path base_dir = root_dir;
-    std::string pat = pattern;
-
-    // Expand ~ to $HOME
-    if (pat[0] == '~') {
-        const char* home = std::getenv("HOME");
-        if (home) {
-            pat = pat.substr(1);
-            base_dir = home;
-        } else {
-            log.warn("Cannot expand ~ in pattern: " + pattern + "$HOME is undefined", pattern);
-            return 0;
-        }
-    }
-
-    // If pattern is relative, resolve to base_dir
-    if (pat[0] == '/') {
-        base_dir = "";
-    }
-
-    // Split pattern into directory and filename part
-    auto pos = pat.find_last_of("/\\");
-    std::string dir_part = pos != std::string::npos ? pat.substr(0, pos) : "";
-    std::string file_part = pos != std::string::npos ? pat.substr(pos + 1) : pat;
-
-    // Handle recursive **
-    bool has_recursive = pat.find("**") != std::string::npos;
-    std::filesystem::path walk_dir = base_dir / dir_part;
-
-    int matched_count = 0;
-    auto match_entry = [&](const std::filesystem::directory_entry& entry){
-        if (!entry.is_regular_file()) return;
-        auto rel = std::filesystem::relative(entry.path(), root_dir, ec);
-        if (fnmatch(pat.c_str(), rel.string().c_str(), 0) == 0) {
-            matched_files.insert(entry.path());
-            matched_count++;
+    // Helper to escape regex metacharacters
+    auto escape = [](char c) -> std::string {
+        switch (c) {
+            case '.': case '+': case '^': case '$': case '(': case ')':
+            case '|': case '{': case '}': case '[': case ']': case '\\':
+                return "\\" + std::string(1, c);
+            default:
+                return std::string(1, c);
         }
     };
-    if (has_recursive) {
-        // Only one ** allowed
-        if (std::count(pat.begin(), pat.end(), '*') > 2) {
-            log.warn("Multiple recursive wildcards (**) are not supported in pattern: " + pattern, pattern);
-            return 0;
-        }
-        // Remove ** from dir_part for walking
-        auto recursive_pos = dir_part.find("**");
-        std::filesystem::path recursive_base = walk_dir;
-        if (recursive_pos != std::string::npos) {
-            recursive_base = base_dir / dir_part.substr(0, recursive_pos);
-        }
-        for (auto& entry : std::filesystem::recursive_directory_iterator(recursive_base, ec)) {
-            match_entry(entry);
-        }
-    } else {
-        // Non-recursive: walk only one directory
-        std::filesystem::path dir_to_walk = walk_dir.empty() ? base_dir : walk_dir;
-        if (std::filesystem::exists(dir_to_walk)) {
-            for (auto& entry : std::filesystem::directory_iterator(dir_to_walk, ec)) {
-                match_entry(entry);
-            }
+
+    // Normalize path separators to '/' for matching
+    std::string g = glob;
+    for (char& ch : g) {
+        if (ch == '\\') ch = '/';
+    }
+
+    // Translate
+    for (size_t i = 0; i < g.size(); ) {
+        if (g.compare(i, 2, "**") == 0) {
+            // ** -> match anything including separators
+            regex += ".*";
+            i += 2;
+        } else if (g[i] == '*') {
+            // * -> any sequence of non-slash characters
+            regex += "[^/]*";
+            ++i;
+        } else if (g[i] == '?') {
+            // ? -> any single non-slash character
+            regex += "[^/]";
+            ++i;
+        } else {
+            // Escape other characters
+            regex += escape(g[i]);
+            ++i;
         }
     }
 
-    return matched_count;
+    // Anchor to full string
+    return "^" + regex + "$";
+}
+
+// Find all files under root matching the given glob pattern.
+// The pattern is interpreted with '/' as the separator and can include
+// *, **, ? as described.
+static inline std::vector<std::filesystem::path> find_matching_glob(std::filesystem::path root, std::string glob_pattern, ConfigLog& log) {
+    std::vector<std::filesystem::path> results;
+
+    if (glob_pattern[0] == '/') {
+        root = "";
+    } else if (glob_pattern[0] == '~') {
+        const char* home = std::getenv("HOME");
+        if (home) {
+            glob_pattern = glob_pattern.substr(1);
+            root = home;
+        } else {
+            log.warn("Cannot expand ~ in pattern: " + glob_pattern + "$HOME is undefined", glob_pattern);
+            return results;
+        }
+    }
+
+    if (!std::filesystem::exists(root) || !std::filesystem::is_directory(root)) return results;
+
+    // Convert glob to regex (based on path separators '/')
+    std::string regex_str = glob_to_regex(glob_pattern);
+
+    // Build a regex with case sensitivity aligned to your filesystem
+    std::regex re(regex_str, std::regex::ECMAScript);
+
+    // Walk recursively and test relative paths
+    for (auto it = std::filesystem::recursive_directory_iterator(root); it != std::filesystem::recursive_directory_iterator(); ++it) {
+        const auto& entry = *it;
+        if (!entry.is_regular_file()) continue;
+
+        std::filesystem::path full = entry.path();
+        std::filesystem::path rel;
+        try {
+            rel = std::filesystem::relative(full, root);
+        } catch (...) {
+            continue;
+        }
+
+        // Normalize to POSIX-like form for matching
+        std::string rel_str = rel.generic_string();
+
+        // Check match
+        if (std::regex_match(rel_str, re)) {
+            results.push_back(full);
+        }
+    }
+
+    return results;
 }
 
 static std::shared_ptr<Project> instantiate_project(
@@ -297,7 +326,7 @@ static std::shared_ptr<Project> instantiate_project(
     std::vector<std::string> exclude_patterns;
     for (const auto& pattern : proj_def.file_patterns) {
         if (!pattern.empty() && pattern[0] == '!') {
-            exclude_patterns.push_back(pattern.substr(1));
+            exclude_patterns.push_back(pattern);
         } else {
             include_patterns.push_back(pattern);
         }
@@ -308,19 +337,7 @@ static std::shared_ptr<Project> instantiate_project(
     // Collect all files matching include patterns and not matching exclude patterns
     std::unordered_set<std::filesystem::path> matched_files;
 
-    // Evaluate include patterns
-    for (const auto& pattern : include_patterns) {
-        bool recursive = pattern.find("**") != std::string::npos;
-        int matched_count = expand_file_pattern(pattern, recursive, root_dir, matched_files, log);
-        // log::debug("Pattern {} matched {} files", pattern, matched_count);
-        if (matched_count == 0) {
-            log.warn("0 files", pattern);
-        } else {
-            log.info(std::to_string(matched_count) + " files matched", pattern);
-        }
-    }
-
-    auto file_arr_to_string = [](const auto& files, const std::filesystem::path& root_dir){
+    auto file_arr_to_string = [](const std::filesystem::path& root_dir, const auto& files){
         std::ostringstream s;
         s << files.size() << " files:" << std::endl;
         for(const auto& file : files) {
@@ -328,33 +345,43 @@ static std::shared_ptr<Project> instantiate_project(
         }
         return s.str();
     };
-    // log.info(file_arr_to_string(matched_files, root_dir), proj_def.name);
 
-    // Remove files matching any exclude pattern
-    // TODO improve
+    // Evaluate include patterns
+    for (const auto& pattern : include_patterns) {
+        auto matches = find_matching_glob(root_dir, pattern, log);
+        if (matches.empty()) {
+            log.warn("empty pattern", pattern);
+            continue;
+        } 
+        
+        auto before = matched_files.size();
+        matched_files.insert(matches.begin(), matches.end());
+        auto after = matched_files.size();
+
+        log.info(
+            "+ " + std::to_string(after - before) + " files"
+            + " | total matches: " + file_arr_to_string(root_dir, matches),
+            pattern
+        );
+    }
+
     for (const auto& pattern : exclude_patterns) {
-        bool recursive = pattern.find("**") != std::string::npos;
-        std::vector<std::filesystem::path> to_remove;
-        auto glob = pattern;
-        std::error_code ec;
-        if (recursive) {
-            for (const auto& file : matched_files) {
-                auto rel = std::filesystem::relative(file, root_dir, ec);
-                if (fnmatch(glob.c_str(), rel.string().c_str(), 0) == 0) {
-                    to_remove.push_back(file);
-                }
-            }
-        } else {
-            for (const auto& file : matched_files) {
-                auto rel = std::filesystem::relative(file, root_dir, ec);
-                if (fnmatch(glob.c_str(), rel.string().c_str(), 0) == 0) {
-                    to_remove.push_back(file);
-                }
-            }
+        auto matches = find_matching_glob(root_dir, pattern.substr(1), log);
+        if (matches.empty()) {
+            log.warn("empty exclude pattern", pattern);
+            continue;
+        } 
+        auto before = matched_files.size();
+        for (const auto& m : matches) {
+            matched_files.erase(m);
         }
-        for (const auto& file : to_remove) {
-            matched_files.erase(file);
-        }
+        auto after = matched_files.size();
+
+        log.info(
+            "- " + std::to_string(before - after) + " files"
+            + " | total matches: " + file_arr_to_string(root_dir, matches),
+            pattern
+        );
     }
 
     auto project = std::make_shared<Project>();
@@ -367,8 +394,8 @@ static std::shared_ptr<Project> instantiate_project(
             project->files.push_back(tracked_files[file]);
         } else {
             auto file_ptr = std::make_shared<File>(file);
-            tracked_files[file] = file_ptr;
             project->files.push_back(file_ptr);
+            tracked_files[file] = file_ptr;
         }
     }
 
