@@ -1,17 +1,19 @@
 #include "artic/ls/server.h"
 
-#include <lsp/io/standardio.h>
-#include <lsp/messages.h> // Generated message definitions
-
-#include "artic/log.h"
-#include "artic/ast.h"
-#include <cctype>
-
+#include "artic/ls/config.h"
 #include "artic/ls/crash.h"
 #include "artic/ls/workspace.h"
-#include "lsp/types.h"
+#include "artic/log.h"
+#include "artic/ast.h"
+
+#include <lsp/types.h>
+#include <lsp/io/standardio.h>
+#include <lsp/messages.h>
+
 #include <fstream>
 #include <string_view>
+#include <cctype>
+
 
 #ifndef ENABLE_JSON
 #error("JSON support is required")
@@ -471,13 +473,13 @@ std::vector<lsp::Range> find_in_file(std::filesystem::path const& file, std::str
     return ranges;
 }
 
-void Server::publish_diagnostics(const workspace::ConfigLog& log) {
+void Server::publish_diagnostics(const workspace::config::ConfigLog& log) {
     // Clear previous diagnostics for project files
     using FileDiags = std::unordered_map<std::filesystem::path, std::vector<lsp::Diagnostic>>;
     
     FileDiags fileDiags;
     auto makeDiag = [&](
-        const workspace::ConfigLog::Message& msg, 
+        const workspace::config::ConfigLog::Message& msg, 
         FileDiags& diags, 
         std::optional<std::filesystem::path> display_in_include_of_other_file = std::nullopt
     ) {
@@ -524,7 +526,7 @@ void Server::publish_diagnostics(const workspace::ConfigLog& log) {
 
 void Server::reload_workspace(const std::string& active_file) {
     log::debug("Reloading workspace configuration");
-    workspace::ConfigLog log;
+    workspace::config::ConfigLog log;
     workspace_->reload(log);
 
     bool print_to_console = true;

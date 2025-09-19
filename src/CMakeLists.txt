@@ -54,6 +54,7 @@ if(ARTIC_BUILD_LSP)
         ls/workspace.cpp
         ls/crash.cpp
         ls/compile.cpp
+        ls/config.cpp
     )
     
     # Include LSP framework headers
