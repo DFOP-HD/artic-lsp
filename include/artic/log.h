@@ -177,7 +177,7 @@ void error(const char* fmt, Args&&... args) {
 }
 
 template <typename... Args>
-void debug(const char* fmt, Args&&... args) {
+void info(const char* fmt, Args&&... args) {
     Output log(std::clog, false);
     log::format(log, fmt, std::forward<Args>(args)...);
     log.stream << std::endl;

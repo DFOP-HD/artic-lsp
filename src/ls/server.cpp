@@ -36,14 +36,222 @@ Server::Server()
 
 Server::~Server() = default;
 
-void Server::send_message(const std::string& message, lsp::MessageType type) {
-    message_handler_.sendNotification<notif::Window_ShowMessage>(
-        notif::Window_ShowMessage::Params {
-            .type = type,
-            .message = message
+int Server::run() {
+    log::info("LSP Server starting...");
+    try {        
+        running_ = true;
+        while (running_) {
+            try {
+                message_handler_.processIncomingMessages();
+                // std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            } catch (const std::exception& e) {
+                log::info("LSP Message processing error: {}", e.what());
+            }
         }
-    );
+    } catch (...) {
+        log::info("LSP Server unknown fatal error");
+        return 1;
+    }
+
+    log::info("LSP Server shutdown complete");
+    return 0;
 }
+
+void Server::send_message(const std::string& message, lsp::MessageType type) {
+    message_handler_.sendNotification<notif::Window_ShowMessage>({ .type = type, .message = message });
+}
+
+Server::FileType Server::get_file_type(const std::filesystem::path& file) {
+    return file.extension() == ".json" ? Config : Source;
+}
+
+// Server Compilation / Diagnostics ----------------------------------------------------------------------
+
+void Server::compile_files(std::span<const workspace::File*> files){
+    if (files.empty()) {
+        log::info("no input files (compile_files)");
+        return;
+    }
+
+    log::info("Compiling {} file(s)", files.size());
+
+    auto compiler = std::make_shared<compiler::CompilerInstance>();
+    last_compilation_result_ = compiler::compile_files(files, compiler);
+
+    const bool print_compile_log = false;
+    if(print_compile_log) compiler->log.print_summary();
+
+    if(last_compilation_result_->stage == compiler::CompileResult::Valid){
+        log::info("Compile success");
+    } else {
+        log::info("Compile failed");
+    }
+
+    auto convert_diagnostic = [](const Diagnostic& diag) {
+        lsp::Diagnostic lsp_diag;
+        lsp_diag.message = diag.message;
+        lsp_diag.range = lsp::Range {
+            .start = lsp::Position { static_cast<uint>(diag.loc.begin.row - 1), static_cast<uint>(diag.loc.begin.col - 1) },
+            .end   = lsp::Position { static_cast<uint>(diag.loc.end.row   - 1), static_cast<uint>(diag.loc.end.col   - 1) }
+        };
+        switch (diag.severity) {
+            case Diagnostic::Error:   lsp_diag.severity = lsp::DiagnosticSeverity::Error;       break;
+            case Diagnostic::Warning: lsp_diag.severity = lsp::DiagnosticSeverity::Warning;     break;
+            case Diagnostic::Info:    lsp_diag.severity = lsp::DiagnosticSeverity::Information; break;
+            case Diagnostic::Hint:    lsp_diag.severity = lsp::DiagnosticSeverity::Hint;        break;
+        }
+        return lsp_diag;
+    };
+
+    // Send Diagnostics for the provided files only
+    std::unordered_map<std::string, std::vector<lsp::Diagnostic>> diagnostics_by_file;
+    for (const auto& diag : compiler->log.diagnostics) {
+        diagnostics_by_file[*diag.loc.file].push_back(convert_diagnostic(diag));
+    }
+    for (const auto* file : files) {
+        auto path = file->path.string();
+
+        message_handler_.sendNotification<notif::TextDocument_PublishDiagnostics>(
+            notif::TextDocument_PublishDiagnostics::Params {
+                .uri = lsp::FileUri::fromPath(path),
+                .diagnostics = diagnostics_by_file.contains(path) ? diagnostics_by_file.at(path) : std::vector<lsp::Diagnostic>{}
+            }
+        );
+    }
+}
+
+void Server::compile_file(const std::filesystem::path& file){
+    if(auto proj = workspace_->project_for_file(file)){
+        // known project
+        auto files = proj.value()->collect_files();
+        log::info("Compiling file {} (project '{}')", file, proj.value()->name);
+        compile_files(files);
+    } else {
+        auto default_proj = workspace_->default_project();
+        // default project
+        log::info("Compiling file {} (not in workspace -> using default project {})", file, default_proj->name);
+        
+        auto files = default_proj->collect_files();
+        workspace::File out_of_project_file(file);
+        out_of_project_file.read();
+        files.push_back(&out_of_project_file);
+
+        // TODO for maintainer
+        // maybe file should not be a temporary here to avoid use after free errors
+        // though i don't think file text should be accessed after compile_files.
+        // However, you could imagine if we do incremental compilation / recompilation at a later stage,
+        // log / locator could try to access the file text, which should be freed at that point (stored as a string_view)
+        compile_files(files);
+    }
+}
+
+// Server Reload Workspace ----------------------------------------------------------------------
+
+void Server::reload_workspace(const std::string& active_file) {
+    log::info("Reloading workspace configuration");
+    workspace::config::ConfigLog log;
+    workspace_->reload(log);
+    // This is somehow blocking. TODO investigate
+    publish_config_diagnostics(log);
+}
+
+static inline std::vector<lsp::Range> find_in_file(std::filesystem::path const& file, std::string_view literal){
+    std::vector<lsp::Range> ranges;
+    if(literal.empty()) return ranges;
+    std::ifstream ifs(file);
+    if (!ifs) return ranges;
+
+    std::string line;
+    lsp::uint line_number = 0;
+    while (std::getline(ifs, line)) {
+        size_t pos = line.find(literal);
+        while (pos != std::string::npos) {
+            ranges.push_back(lsp::Range{
+                lsp::Position{line_number, static_cast<lsp::uint>(pos)},
+                lsp::Position{line_number, static_cast<lsp::uint>(pos + literal.size())}
+            });
+            pos = line.find(literal, pos + 1);
+        }
+        line_number++;
+    }
+    return ranges;
+}
+
+void Server::publish_config_diagnostics(const workspace::config::ConfigLog& log) {
+    const bool print_to_console = true;
+    if(print_to_console) {
+        log::info("Reloaded Workspace");
+        log::info("--- Config Log ---");
+        for (auto& e : log.messages) {
+            if(e.severity > lsp::DiagnosticSeverity::Warning) continue;
+            auto s = 
+                (e.severity == lsp::DiagnosticSeverity::Error)        ? "Error" :
+                (e.severity == lsp::DiagnosticSeverity::Warning)      ? "Warning" : 
+                (e.severity == lsp::DiagnosticSeverity::Information)  ? "Info" : 
+                (e.severity == lsp::DiagnosticSeverity::Hint)         ? "Hint" : 
+                                                                        "Unknown";
+
+            log::info("[{}] {}: {}", s, e.file, e.message);
+        }
+        log::info("--- Config Log ---");
+        workspace_->projects_.print();
+    }
+
+    using FileDiags = std::unordered_map<std::filesystem::path, std::vector<lsp::Diagnostic>>;
+    FileDiags fileDiags;
+
+    auto makeDiag = [](
+        const workspace::config::ConfigLog::Message& msg, 
+        std::optional<std::filesystem::path> parent_config,
+        FileDiags& diags
+    ) {
+        lsp::Diagnostic diag;
+        diag.message = msg.message;
+        diag.severity = msg.severity;
+        diag.range = lsp::Range{ lsp::Position{0,0}, lsp::Position{0,0} };
+        
+        auto file = msg.file;
+        if(parent_config) file = parent_config.value();
+
+        int display_count = 0;
+        if(msg.context.has_value()) {
+            auto literal = msg.context.value().literal;
+            if(parent_config) literal = "include-projects";
+
+            auto occurrences = find_in_file(file, literal);
+            for(auto& occ : occurrences) {
+                lsp::Diagnostic pos_diag(diag);
+                pos_diag.range = occ;
+                diags[file].push_back(pos_diag);
+                display_count++;
+            }
+        }
+        if(display_count == 0) diags[file].push_back(diag);
+    };
+
+    // create diagnostics
+    for (const auto& e : log.messages) {
+        // Diagnosics for the file itself
+        makeDiag(e, std::nullopt, fileDiags);
+
+        // Propagate errors to the workspace config file
+        if(e.severity == lsp::DiagnosticSeverity::Error) {
+            makeDiag(e, workspace_->workspace_config_path, fileDiags);
+        }
+    }
+
+    // Send diagnostics
+    for(auto& [file, diags] : fileDiags) {
+        message_handler_.sendNotification<notif::TextDocument_PublishDiagnostics>(
+            notif::TextDocument_PublishDiagnostics::Params {
+                .uri = lsp::FileUri::fromPath(file.string()),
+                .diagnostics = diags
+            }
+        );
+    }
+}
+
+// Server Events ----------------------------------------------------------------------
 
 struct InitOptions {
     std::filesystem::path workspace_root;
@@ -51,52 +259,42 @@ struct InitOptions {
     std::filesystem::path global_config_path;
 };
 
-static InitOptions parse_initialize_options(const reqst::Initialize::Params& params, Server& log) {
+static inline InitOptions parse_initialize_options(const reqst::Initialize::Params& params, Server& log) {
     InitOptions data;
 
-    if (!params.rootUri.isNull()) {
-        data.workspace_root = std::string(params.rootUri.value().path());
-        
-        if (params.initializationOptions.has_value()) {
-            const auto& any = params.initializationOptions.value();
-            if (any.isObject()) {
-                const auto& obj = any.object();
-                if (auto it = obj.find("workspaceConfig"); it != obj.end() && it->second.isString()) {
-                    data.workspace_config_path = it->second.string();
-                }
-                if (auto it = obj.find("globalConfig"); it != obj.end() && it->second.isString()) {
-                    data.global_config_path = it->second.string();
-                }
-            }
-        } else {
-            log.send_message("No workspace root provided in initialize request", lsp::MessageType::Error);
+    if (params.rootUri.isNull()) {
+        log.send_message("No root URI provided in initialize request", lsp::MessageType::Error);
+        return data;
+    }
+    
+    data.workspace_root = std::string(params.rootUri.value().path());
+    
+    if (auto init = params.initializationOptions; init.has_value() && init->isObject()) {
+        const auto& obj = init->object();
+        if (auto it = obj.find("workspaceConfig"); it != obj.end() && it->second.isString()) {
+            data.workspace_config_path = it->second.string();
+        }
+        if (auto it = obj.find("globalConfig"); it != obj.end() && it->second.isString()) {
+            data.global_config_path = it->second.string();
         }
     } else {
-        log.send_message("No root URI provided in initialize request", lsp::MessageType::Error);
+        log.send_message("No workspace root provided in initialize request", lsp::MessageType::Error);
     }
     return data;
 }
 
-Server::FileType Server::get_file_type(const std::filesystem::path& file) {
-    if(file.extension() == ".json")
-        return Config;
-    return Source;
-}
-
-// Server Events ----------------------------------------------------------------------
-
 void Server::setup_events() {
     // Initilalize ----------------------------------------------------------------------
     message_handler_.add<reqst::Initialize>([this](reqst::Initialize::Params&& params) {
-        log::debug( "LSP >>> Initialize");
+        log::info( "LSP >>> Initialize");
         
         InitOptions init_data = parse_initialize_options(params, *this);
 
         if(init_data.workspace_config_path.empty()) send_message("No local artic.json workspace config", lsp::MessageType::Warning);
         if(init_data.global_config_path.empty())    send_message("No global artic.json config", lsp::MessageType::Warning); 
-        log::debug("Workspace root: {}", init_data.workspace_root);
-        log::debug("Workspace config path: {}", init_data.workspace_config_path);
-        log::debug("Global config path: {}", init_data.global_config_path);
+        log::info("Workspace root: {}", init_data.workspace_root);
+        log::info("Workspace config path: {}", init_data.workspace_config_path);
+        log::info("Global config path: {}", init_data.global_config_path);
         workspace_ = std::make_unique<workspace::Workspace>(
             init_data.workspace_root, 
             init_data.workspace_config_path, 
@@ -120,26 +318,26 @@ void Server::setup_events() {
     });
 
     message_handler_.add<notif::Initialized>([this](notif::Initialized::Params&&){
-        log::debug("LSP >>> Initialized");
+        log::info("LSP >>> Initialized");
         reload_workspace();
     });
 
     // Shutdown ----------------------------------------------------------------------
     message_handler_.add<reqst::Shutdown>([this]() {
-        log::debug("LSP >>> Shutdown");
+        log::info("LSP >>> Shutdown");
         running_ = false;
         return reqst::Shutdown::Result {};
     });
 
     // Textdocument ----------------------------------------------------------------------
     message_handler_.add<notif::TextDocument_DidChange>([](notif::TextDocument_DidChange::Params&& params) {
-        log::debug("LSP >>> TextDocument DidChange");
+        log::info("LSP >>> TextDocument DidChange");
     });
     message_handler_.add<notif::TextDocument_DidClose>([](notif::TextDocument_DidClose::Params&& params) {
-        log::debug("LSP >>> TextDocument DidClose");
+        log::info("LSP >>> TextDocument DidClose");
     });
     message_handler_.add<notif::TextDocument_DidOpen>([this](notif::TextDocument_DidOpen::Params&& params) {
-        log::debug("LSP >>> TextDocument DidOpen");
+        log::info("LSP >>> TextDocument DidOpen");
 
         if(get_file_type(params.textDocument.uri.path()) == FileType::Source) {
             auto path = std::string(params.textDocument.uri.path());
@@ -147,7 +345,7 @@ void Server::setup_events() {
         }
     });
     message_handler_.add<notif::TextDocument_DidSave>([this](notif::TextDocument_DidSave::Params&& params) {
-        log::debug("LSP >>> TextDocument DidSave");
+        log::info("LSP >>> TextDocument DidSave");
         if(get_file_type(params.textDocument.uri.path()) == FileType::Config) {
             reload_workspace();
             return;
@@ -164,12 +362,12 @@ void Server::setup_events() {
     // Workspace ----------------------------------------------------------------------
 
     message_handler_.add<notif::Workspace_DidChangeConfiguration>([this](notif::Workspace_DidChangeConfiguration::Params&& params) {
-        log::debug("LSP >>> Workspace DidChangeConfiguration");
+        log::info("LSP >>> Workspace DidChangeConfiguration");
         // Optionally, could inspect params.settings to override paths.
         reload_workspace();
     });
     message_handler_.add<notif::Workspace_DidChangeWatchedFiles>([this](notif::Workspace_DidChangeWatchedFiles::Params&& params) {
-        log::debug("LSP >>> Workspace DidChangeWatchedFiles");
+        log::info("LSP >>> Workspace DidChangeWatchedFiles");
 
         for(auto& change : params.changes) {
             auto path = change.uri.path();
@@ -208,7 +406,7 @@ void Server::setup_events() {
     // req::TextDocument_Completion
     // req::TextDocument_Declaration
     message_handler_.add<reqst::TextDocument_Definition>([this](reqst::TextDocument_Definition::Params&& params) -> reqst::TextDocument_Definition::Result{
-        log::debug("LSP >>> TextDocument Definition");
+        log::info("LSP >>> TextDocument Definition");
         // Go-to-definition using Locator from last compilation
         auto uri = params.textDocument.uri;
         auto file_path = std::string(uri.path());
@@ -336,220 +534,6 @@ void Server::setup_events() {
     // notif::Window_LogMessage
     // notif::Window_ShowMessage
     // notif::Window_WorkDoneProgress_Cancel
-}
-
-// Run Server ----------------------------------------------------------------------
-
-int Server::run() {
-    running_ = true;
-    
-    try {
-        log::debug("LSP Server starting...");
-        
-        while (running_) {
-            try {
-                message_handler_.processIncomingMessages();
-                // std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            } catch (const std::exception& e) {
-                log::error("LSP Message processing error: {}", e.what());
-            }
-        }
-    } catch (const std::exception& e) {
-        log::debug("LSP Server fatal error: {}", e.what());
-        return 1;
-    } catch (...) {
-        log::debug("LSP Server unknown fatal error");
-        return 1;
-    }
-
-    log::debug("LSP Server shutdown complete");
-    return 0;
-}
-
-// Compilation ----------------------------------------------------------------------
-
-static lsp::Array<lsp::Diagnostic> convert_diagnostics(const std::vector<Diagnostic>& diagnostics) {
-    lsp::Array<lsp::Diagnostic> lsp_diagnostics;
-    for (const auto& diag : diagnostics) {
-        lsp::Diagnostic lsp_diag;
-        lsp_diag.range = lsp::Range {
-            .start = lsp::Position { static_cast<uint>(diag.loc.begin.row - 1), static_cast<uint>(diag.loc.begin.col - 1) },
-            .end   = lsp::Position { static_cast<uint>(diag.loc.end.row   - 1), static_cast<uint>(diag.loc.end.col   - 1) }
-        };
-        lsp_diag.message = diag.message;
-        switch (diag.severity) {
-            case Diagnostic::Error:   lsp_diag.severity = lsp::DiagnosticSeverity::Error;       break;
-            case Diagnostic::Warning: lsp_diag.severity = lsp::DiagnosticSeverity::Warning;     break;
-            case Diagnostic::Info:    lsp_diag.severity = lsp::DiagnosticSeverity::Information; break;
-            case Diagnostic::Hint:    lsp_diag.severity = lsp::DiagnosticSeverity::Hint;        break;
-        }
-        lsp_diagnostics.push_back(lsp_diag);
-    }
-    return lsp_diagnostics;
-}
-
-void Server::compile_files(std::span<const workspace::File*> files){
-    if (files.empty()) {
-        log::error("no input files (compile_files)");
-        return;
-    }
-
-    log::debug("Compiling {} file(s)", files.size());
-
-    auto compiler = std::make_shared<compiler::CompilerInstance>();
-    last_compilation_result_ = compiler::compile_files(files, compiler);
-
-    const bool print_compile_log = false;
-    if(print_compile_log) compiler->log.print_summary();
-
-    if(last_compilation_result_->stage == compiler::CompileResult::Valid){
-        log::debug("Compile success");
-    } else {
-        log::debug("Compile failed");
-    }
-
-    // Send Diagnostics for the provided files only
-    std::unordered_map<std::string, std::vector<Diagnostic>> diagnostics_by_file;
-    for (const auto& diag : compiler->log.diagnostics) {
-        diagnostics_by_file[*diag.loc.file].push_back(diag);
-    }
-    for (auto file : files) {
-        auto it = diagnostics_by_file.find(file->path);
-        auto path_str = file->path.string();
-        const auto& diags = (it != diagnostics_by_file.end()) ? it->second : std::vector<Diagnostic>{};
-        message_handler_.sendNotification<notif::TextDocument_PublishDiagnostics>(
-            notif::TextDocument_PublishDiagnostics::Params {
-                .uri = lsp::FileUri::fromPath(path_str),
-                .diagnostics = convert_diagnostics(diags)
-            }
-        );
-    }
-}
-
-void Server::compile_file(const std::filesystem::path& file){
-    if(auto proj = workspace_->project_for_file(file)){
-        // known project
-        auto files = proj.value()->collect_files();
-        log::debug("Compiling file {} (project '{}')", file, proj.value()->name);
-        compile_files(files);
-    } else {
-        auto default_proj = workspace_->default_project();
-        // default project
-        log::debug("Compiling file {} (not in workspace -> using default project {})", file, default_proj->name);
-        
-        auto files = default_proj->collect_files();
-        workspace::File out_of_project_file(file);
-        out_of_project_file.read();
-        files.push_back(&out_of_project_file);
-
-        // TODO for maintainer
-        // maybe file should not be a temporary here to avoid use after free errors
-        // though i don't think file text should be accessed after compile_files.
-        // However, you could imagine if we do incremental compilation / recompilation at a later stage,
-        // log / locator could try to access the file text, which is likely stored as a string_view
-        compile_files(files);
-    }
-}
-
-std::vector<lsp::Range> find_in_file(std::filesystem::path const& file, std::string_view literal){
-    std::vector<lsp::Range> ranges;
-    if(literal.empty()) return ranges;
-    std::ifstream ifs(file);
-    if (!ifs) return ranges;
-
-    std::string line;
-    lsp::uint line_number = 0;
-    while (std::getline(ifs, line)) {
-        size_t pos = line.find(literal);
-        while (pos != std::string::npos) {
-            ranges.push_back(lsp::Range{
-                lsp::Position{line_number, static_cast<lsp::uint>(pos)},
-                lsp::Position{line_number, static_cast<lsp::uint>(pos + literal.size())}
-            });
-            pos = line.find(literal, pos + 1);
-        }
-        line_number++;
-    }
-    return ranges;
-}
-
-void Server::publish_diagnostics(const workspace::config::ConfigLog& log) {
-    // Clear previous diagnostics for project files
-    using FileDiags = std::unordered_map<std::filesystem::path, std::vector<lsp::Diagnostic>>;
-    
-    FileDiags fileDiags;
-    auto makeDiag = [&](
-        const workspace::config::ConfigLog::Message& msg, 
-        FileDiags& diags, 
-        std::optional<std::filesystem::path> display_in_include_of_other_file = std::nullopt
-    ) {
-        lsp::Diagnostic diag;
-        diag.message = msg.message;
-        diag.severity = msg.severity;
-        diag.range = lsp::Range{ lsp::Position{0,0}, lsp::Position{0,0} };
-        auto file = msg.file;
-        if(display_in_include_of_other_file) file = display_in_include_of_other_file.value();
-
-        int display_count = 0;
-        if(msg.context.has_value()) {
-            auto literal = msg.context.value().literal;
-            if(display_in_include_of_other_file) literal = "include-projects";
-
-            auto occurrences = find_in_file(file, literal);
-            for(auto& occ : occurrences) {
-                lsp::Diagnostic pos_diag(diag);
-                pos_diag.range = occ;
-                diags[file].push_back(pos_diag);
-                display_count++;
-            }
-        }
-        if(display_count == 0) diags[file].push_back(diag);
-    };
-
-    // create diagnostics
-    for (auto& e : log.messages) {
-        makeDiag(e, fileDiags);
-        if(e.severity == lsp::DiagnosticSeverity::Error) 
-            makeDiag(e, fileDiags, workspace_->workspace_config_path);
-    }
-
-    // Send diagnostics
-    for(auto& [file, diags] : fileDiags) {
-        message_handler_.sendNotification<notif::TextDocument_PublishDiagnostics>(
-            notif::TextDocument_PublishDiagnostics::Params {
-                .uri = lsp::FileUri::fromPath(file.string()),
-                .diagnostics = diags
-            }
-        );
-    }
-}
-
-void Server::reload_workspace(const std::string& active_file) {
-    log::debug("Reloading workspace configuration");
-    workspace::config::ConfigLog log;
-    workspace_->reload(log);
-
-    bool print_to_console = true;
-    if(print_to_console) {
-        log::debug("Reloaded Workspace");
-        log::debug("--- Config Log ---");
-        for (auto& e : log.messages) {
-            if(e.severity > lsp::DiagnosticSeverity::Warning) continue;
-            auto s = 
-                (e.severity == lsp::DiagnosticSeverity::Error)        ? "Error" :
-                (e.severity == lsp::DiagnosticSeverity::Warning)      ? "Warning" : 
-                (e.severity == lsp::DiagnosticSeverity::Information)  ? "Info" : 
-                (e.severity == lsp::DiagnosticSeverity::Hint)         ? "Hint" : 
-                                                                        "Unknown";
-
-            log::debug("[{}] {}: {}", s, e.file, e.message);
-        }
-        log::debug("--- Config Log ---");
-        workspace_->projects_.print();
-    }
-
-    // This is somehow blocking. TODO investigate
-    publish_diagnostics(log);
 }
 
 } // namespace artic::ls

@@ -98,42 +98,42 @@ static inline void print_project(const Project& proj, int ind = 0){
     };
 
     indent(ind);
-    log::debug("project: '{}' (", proj.name);
+    log::info("project: '{}' (", proj.name);
     
     indent(ind+1);
-    log::debug("files: (");
+    log::info("files: (");
     for (const auto& file : proj.files) {
         indent(ind+2);
-        log::debug("{}", file->path);
+        log::info("{}", file->path);
     }
 
     indent(ind+1);
-    log::debug(")");
+    log::info(")");
     
     indent(ind+1);
-    log::debug("dependencies: (");
+    log::info("dependencies: (");
     for (const auto& dep : proj.dependencies) {
         const bool print_recursive = false;
         if(print_recursive)
             print_project(*dep, ind + 2);
         else {
             indent(ind+2);
-            log::debug("project: '{}'", dep->name);
+            log::info("project: '{}'", dep->name);
         }
     }
     indent(ind+1);
-    log::debug(")");
+    log::info(")");
     indent(ind);
-    log::debug(")");
+    log::info(")");
 }
 
 void ProjectRegistry::print() const {
-    log::debug("--- Project Registry ---");
+    log::info("--- Project Registry ---");
     print_project(*default_project);
     for (const auto& p : all_projects){
         print_project(*p);
     }
-    log::debug("--- Project Registry ---");
+    log::info("--- Project Registry ---");
     std::clog << std::endl;
 }
 
