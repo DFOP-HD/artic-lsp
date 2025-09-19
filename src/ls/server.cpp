@@ -75,6 +75,12 @@ static InitializeData parse_initialize_options(const lsp::requests::Initialize::
     return data;
 }
 
+Server::FileType Server::get_file_type(const std::filesystem::path& file) {
+    if(file.extension() == ".json")
+        return Config;
+    return Source;
+}
+
 // Server Events ----------------------------------------------------------------------
 
 void Server::setup_events() {
@@ -124,7 +130,6 @@ void Server::setup_events() {
     });
 
     // Textdocument ----------------------------------------------------------------------
-
     message_handler_.add<lsp::notifications::TextDocument_DidChange>([](lsp::notifications::TextDocument_DidChange::Params&& params) {
         log::debug("LSP >>> TextDocument DidChange");
     });
@@ -133,11 +138,18 @@ void Server::setup_events() {
     });
     message_handler_.add<lsp::notifications::TextDocument_DidOpen>([this](lsp::notifications::TextDocument_DidOpen::Params&& params) {
         log::debug("LSP >>> TextDocument DidOpen");
-        auto path = std::string(params.textDocument.uri.path());
-        compile_file(path);
+
+        if(get_file_type(params.textDocument.uri.path()) == FileType::Source) {
+            auto path = std::string(params.textDocument.uri.path());
+            compile_file(path);
+        }
     });
     message_handler_.add<lsp::notifications::TextDocument_DidSave>([this](lsp::notifications::TextDocument_DidSave::Params&& params) {
         log::debug("LSP >>> TextDocument DidSave");
+        if(get_file_type(params.textDocument.uri.path()) == FileType::Config) {
+            reload_workspace();
+            return;
+        }
         auto file = params.textDocument.uri.path();
         const auto& files = workspace_->projects_.tracked_files;
         auto it = files.find(file);
@@ -149,57 +161,27 @@ void Server::setup_events() {
 
     // Workspace ----------------------------------------------------------------------
 
-    // lsp::notifications::Workspace_DidChangeConfiguration
     message_handler_.add<lsp::notifications::Workspace_DidChangeConfiguration>([this](lsp::notifications::Workspace_DidChangeConfiguration::Params&& params) {
         log::debug("LSP >>> Workspace DidChangeConfiguration");
         // Optionally, could inspect params.settings to override paths.
         reload_workspace();
     });
-    // lsp::notifications::Workspace_DidChangeWatchedFiles
     message_handler_.add<lsp::notifications::Workspace_DidChangeWatchedFiles>([this](lsp::notifications::Workspace_DidChangeWatchedFiles::Params&& params) {
         log::debug("LSP >>> Workspace DidChangeWatchedFiles");
 
-        std::filesystem::path active_file_to_compile;
         for(auto& change : params.changes) {
             auto path = change.uri.path();
 
-            if ((!workspace_->workspace_config_path.empty() && path == workspace_->workspace_config_path) || 
-                (!workspace_->global_config_path.empty()    && path == workspace_->global_config_path)) {
-                log::debug("Configuration file change detected; reloading workspace");
-                reload_workspace();
-                return;
-            }
-
             switch(change.type.index()) {
-                case lsp::FileChangeType::Created: {
-                    reload_workspace();
-                    return;
-                }
-                case lsp::FileChangeType::Changed: {
-                    /* Disable cause we do this on_save now to also cover out-of-workspace files
-
-                    // update file content
-                    const auto& files = workspace_->projects_.tracked_files;
-                    auto it = files.find(path);            
-                    if(it != files.end()) {
-                        it->second->read();
-                    }
-
-                    // set active
-                    active_file = path;
-
-                    */
-                    break;
-                }
+                case lsp::FileChangeType::Created: 
                 case lsp::FileChangeType::Deleted: {
                     reload_workspace();
                     return;
                 }
+                case lsp::FileChangeType::Changed: break; // Handle elsewhere
                 case lsp::FileChangeType::MAX_VALUE: break;
             }
         }
-        if(!active_file_to_compile.empty()) compile_file(active_file_to_compile);
-
     });
 
     // lsp::notifications::Workspace_DidChangeWorkspaceFolders
@@ -223,7 +205,6 @@ void Server::setup_events() {
     // lsp::requests::TextDocument_ColorPresentation
     // lsp::requests::TextDocument_Completion
     // lsp::requests::TextDocument_Declaration
-    // lsp::requests::TextDocument_Definition
     message_handler_.add<lsp::requests::TextDocument_Definition>([this](lsp::requests::TextDocument_Definition::Params&& params) {
         log::debug("LSP >>> TextDocument Definition");
         // Go-to-definition using Locator from last compilation
@@ -400,10 +381,10 @@ static lsp::Array<lsp::Diagnostic> convert_diagnostics(const std::vector<Diagnos
         };
         lsp_diag.message = diag.message;
         switch (diag.severity) {
-            case Diagnostic::Error:       lsp_diag.severity = lsp::DiagnosticSeverity::Error;       break;
-            case Diagnostic::Warning:     lsp_diag.severity = lsp::DiagnosticSeverity::Warning;     break;
-            case Diagnostic::Info: lsp_diag.severity = lsp::DiagnosticSeverity::Information; break;
-            case Diagnostic::Hint:        lsp_diag.severity = lsp::DiagnosticSeverity::Hint;        break;
+            case Diagnostic::Error:   lsp_diag.severity = lsp::DiagnosticSeverity::Error;       break;
+            case Diagnostic::Warning: lsp_diag.severity = lsp::DiagnosticSeverity::Warning;     break;
+            case Diagnostic::Info:    lsp_diag.severity = lsp::DiagnosticSeverity::Information; break;
+            case Diagnostic::Hint:    lsp_diag.severity = lsp::DiagnosticSeverity::Hint;        break;
         }
         lsp_diagnostics.push_back(lsp_diag);
     }

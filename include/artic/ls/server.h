@@ -29,6 +29,9 @@ public:
     void compile_files(std::span<const workspace::File*> files);
     void compile_file(const std::filesystem::path& file);
 
+    enum FileType {Source, Config};
+    static FileType get_file_type(const std::filesystem::path& file);
+
     lsp::Connection connection_;
     lsp::MessageHandler message_handler_;
 private:
