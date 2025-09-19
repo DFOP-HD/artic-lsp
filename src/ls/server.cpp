@@ -18,6 +18,8 @@
 #error("JSON support is required")
 #endif
 
+namespace reqst = lsp::requests;
+namespace notif = lsp::notifications;
 
 namespace artic::ls {
 
@@ -34,23 +36,22 @@ Server::Server()
 Server::~Server() = default;
 
 void Server::send_message(const std::string& message, lsp::MessageType type) {
-    message_handler_.sendNotification<lsp::notifications::Window_ShowMessage>(
-        lsp::notifications::Window_ShowMessage::Params {
+    message_handler_.sendNotification<notif::Window_ShowMessage>(
+        notif::Window_ShowMessage::Params {
             .type = type,
             .message = message
         }
     );
 }
 
-
-struct InitializeData {
+struct InitOptions {
     std::filesystem::path workspace_root;
     std::filesystem::path workspace_config_path;
     std::filesystem::path global_config_path;
 };
 
-static InitializeData parse_initialize_options(const lsp::requests::Initialize::Params& params, Server& log) {
-    InitializeData data;
+static InitOptions parse_initialize_options(const reqst::Initialize::Params& params, Server& log) {
+    InitOptions data;
 
     if (!params.rootUri.isNull()) {
         data.workspace_root = std::string(params.rootUri.value().path());
@@ -85,10 +86,10 @@ Server::FileType Server::get_file_type(const std::filesystem::path& file) {
 
 void Server::setup_events() {
     // Initilalize ----------------------------------------------------------------------
-    message_handler_.add<lsp::requests::Initialize>([this](lsp::requests::Initialize::Params&& params) {
+    message_handler_.add<reqst::Initialize>([this](reqst::Initialize::Params&& params) {
         log::debug( "LSP >>> Initialize");
         
-        InitializeData init_data = parse_initialize_options(params, *this);
+        InitOptions init_data = parse_initialize_options(params, *this);
 
         if(init_data.workspace_config_path.empty()) send_message("No local artic.json workspace config", lsp::MessageType::Warning);
         if(init_data.global_config_path.empty())    send_message("No global artic.json config", lsp::MessageType::Warning); 
@@ -101,7 +102,7 @@ void Server::setup_events() {
             init_data.global_config_path
         );
         
-        return lsp::requests::Initialize::Result {
+        return reqst::Initialize::Result {
             .capabilities = lsp::ServerCapabilities{
                 .textDocumentSync = lsp::TextDocumentSyncOptions{
                     .openClose = true,
@@ -117,26 +118,26 @@ void Server::setup_events() {
         };
     });
 
-    message_handler_.add<lsp::notifications::Initialized>([this](lsp::notifications::Initialized::Params&&){
+    message_handler_.add<notif::Initialized>([this](notif::Initialized::Params&&){
         log::debug("LSP >>> Initialized");
         reload_workspace();
     });
 
     // Shutdown ----------------------------------------------------------------------
-    message_handler_.add<lsp::requests::Shutdown>([this]() {
+    message_handler_.add<reqst::Shutdown>([this]() {
         log::debug("LSP >>> Shutdown");
         running_ = false;
-        return lsp::requests::Shutdown::Result {};
+        return reqst::Shutdown::Result {};
     });
 
     // Textdocument ----------------------------------------------------------------------
-    message_handler_.add<lsp::notifications::TextDocument_DidChange>([](lsp::notifications::TextDocument_DidChange::Params&& params) {
+    message_handler_.add<notif::TextDocument_DidChange>([](notif::TextDocument_DidChange::Params&& params) {
         log::debug("LSP >>> TextDocument DidChange");
     });
-    message_handler_.add<lsp::notifications::TextDocument_DidClose>([](lsp::notifications::TextDocument_DidClose::Params&& params) {
+    message_handler_.add<notif::TextDocument_DidClose>([](notif::TextDocument_DidClose::Params&& params) {
         log::debug("LSP >>> TextDocument DidClose");
     });
-    message_handler_.add<lsp::notifications::TextDocument_DidOpen>([this](lsp::notifications::TextDocument_DidOpen::Params&& params) {
+    message_handler_.add<notif::TextDocument_DidOpen>([this](notif::TextDocument_DidOpen::Params&& params) {
         log::debug("LSP >>> TextDocument DidOpen");
 
         if(get_file_type(params.textDocument.uri.path()) == FileType::Source) {
@@ -144,7 +145,7 @@ void Server::setup_events() {
             compile_file(path);
         }
     });
-    message_handler_.add<lsp::notifications::TextDocument_DidSave>([this](lsp::notifications::TextDocument_DidSave::Params&& params) {
+    message_handler_.add<notif::TextDocument_DidSave>([this](notif::TextDocument_DidSave::Params&& params) {
         log::debug("LSP >>> TextDocument DidSave");
         if(get_file_type(params.textDocument.uri.path()) == FileType::Config) {
             reload_workspace();
@@ -161,12 +162,12 @@ void Server::setup_events() {
 
     // Workspace ----------------------------------------------------------------------
 
-    message_handler_.add<lsp::notifications::Workspace_DidChangeConfiguration>([this](lsp::notifications::Workspace_DidChangeConfiguration::Params&& params) {
+    message_handler_.add<notif::Workspace_DidChangeConfiguration>([this](notif::Workspace_DidChangeConfiguration::Params&& params) {
         log::debug("LSP >>> Workspace DidChangeConfiguration");
         // Optionally, could inspect params.settings to override paths.
         reload_workspace();
     });
-    message_handler_.add<lsp::notifications::Workspace_DidChangeWatchedFiles>([this](lsp::notifications::Workspace_DidChangeWatchedFiles::Params&& params) {
+    message_handler_.add<notif::Workspace_DidChangeWatchedFiles>([this](notif::Workspace_DidChangeWatchedFiles::Params&& params) {
         log::debug("LSP >>> Workspace DidChangeWatchedFiles");
 
         for(auto& change : params.changes) {
@@ -184,28 +185,28 @@ void Server::setup_events() {
         }
     });
 
-    // lsp::notifications::Workspace_DidChangeWorkspaceFolders
-    // lsp::notifications::Workspace_DidCreateFiles
-    // lsp::notifications::Workspace_DidDeleteFiles
-    // lsp::notifications::Workspace_DidRenameFiles
+    // notif::Workspace_DidChangeWorkspaceFolders
+    // notif::Workspace_DidCreateFiles
+    // notif::Workspace_DidDeleteFiles
+    // notif::Workspace_DidRenameFiles
 
     // Other ----------------------------------------------------------------------
 
-    // lsp::requests::CallHierarchy_IncomingCalls
-    // lsp::requests::CallHierarchy_OutgoingCalls
-    // lsp::requests::Client_RegisterCapability
-    // lsp::requests::Client_UnregisterCapability
-    // lsp::requests::CodeAction_Resolve
-    // lsp::requests::CodeLens_Resolve
-    // lsp::requests::CompletionItem_Resolve
-    // lsp::requests::DocumentLink_Resolve
-    // lsp::requests::InlayHint_Resolve
-    // lsp::requests::TextDocument_CodeAction
-    // lsp::requests::TextDocument_CodeLens
-    // lsp::requests::TextDocument_ColorPresentation
-    // lsp::requests::TextDocument_Completion
-    // lsp::requests::TextDocument_Declaration
-    message_handler_.add<lsp::requests::TextDocument_Definition>([this](lsp::requests::TextDocument_Definition::Params&& params) {
+    // req::CallHierarchy_IncomingCalls
+    // req::CallHierarchy_OutgoingCalls
+    // req::Client_RegisterCapability
+    // req::Client_UnregisterCapability
+    // req::CodeAction_Resolve
+    // req::CodeLens_Resolve
+    // req::CompletionItem_Resolve
+    // req::DocumentLink_Resolve
+    // req::InlayHint_Resolve
+    // req::TextDocument_CodeAction
+    // req::TextDocument_CodeLens
+    // req::TextDocument_ColorPresentation
+    // req::TextDocument_Completion
+    // req::TextDocument_Declaration
+    message_handler_.add<reqst::TextDocument_Definition>([this](reqst::TextDocument_Definition::Params&& params) -> reqst::TextDocument_Definition::Result{
         log::debug("LSP >>> TextDocument Definition");
         // Go-to-definition using Locator from last compilation
         auto uri = params.textDocument.uri;
@@ -214,7 +215,7 @@ void Server::setup_events() {
         int req_col1 = static_cast<int>(params.position.character) + 1; // Loc is 1-based
 
         if (!last_compilation_result_ || last_compilation_result_->stage < compiler::CompileResult::NameBinded) {
-            return lsp::requests::TextDocument_Definition::Result{};
+            return {};
         }
 
         // Use Locator to extract the word at the requested position
@@ -247,7 +248,7 @@ void Server::setup_events() {
         }
 
         if (ident.empty()) {
-            return lsp::requests::TextDocument_Definition::Result{};
+            return {};
         }
 
         // Find a matching top-level declaration by name
@@ -259,86 +260,81 @@ void Server::setup_events() {
         }
 
         if (!target || !target->loc.file) {
-            return lsp::requests::TextDocument_Definition::Result{};
+            return {};
         }
 
         // Build LSP Location from target->loc
         auto def_uri = lsp::FileUri::fromPath(*target->loc.file);
         lsp::Location loc {
             .uri = def_uri,
-            .range = lsp::Range{
-                .start = lsp::Position{ static_cast<lsp::uint>(target->loc.begin.row - 1), static_cast<lsp::uint>(target->loc.begin.col - 1) },
-                .end   = lsp::Position{ static_cast<lsp::uint>(target->loc.end.row   - 1), static_cast<lsp::uint>(target->loc.end.col   - 1) }
+            .range = lsp::Range {
+                .start = lsp::Position { static_cast<lsp::uint>(target->loc.begin.row - 1), static_cast<lsp::uint>(target->loc.begin.col - 1) },
+                .end   = lsp::Position { static_cast<lsp::uint>(target->loc.end.row   - 1), static_cast<lsp::uint>(target->loc.end.col   - 1) }
             }
         };
-        return lsp::requests::TextDocument_Definition::Result{ loc };
+        return { loc };
     });
-    // lsp::requests::TextDocument_Diagnostic
-    // lsp::requests::TextDocument_DocumentColor
-    // lsp::requests::TextDocument_DocumentHighlight
-    // lsp::requests::TextDocument_DocumentLink
-    // lsp::requests::TextDocument_DocumentSymbol
-    // lsp::requests::TextDocument_FoldingRange
-    // lsp::requests::TextDocument_Formatting
-    // lsp::requests::TextDocument_Hover
-    // lsp::requests::TextDocument_Implementation
-    // lsp::requests::TextDocument_InlayHint
-    // lsp::requests::TextDocument_InlineCompletion
-    // lsp::requests::TextDocument_InlineValue
-    // lsp::requests::TextDocument_LinkedEditingRange
-    // lsp::requests::TextDocument_Moniker
-    // lsp::requests::TextDocument_OnTypeFormatting
-    // lsp::requests::TextDocument_PrepareCallHierarchy
-    // lsp::requests::TextDocument_PrepareRename
-    // lsp::requests::TextDocument_PrepareTypeHierarchy
-    // lsp::requests::TextDocument_RangeFormatting
-    // lsp::requests::TextDocument_RangesFormatting
-    // lsp::requests::TextDocument_References
-    // lsp::requests::TextDocument_Rename
-    // lsp::requests::TextDocument_SelectionRange
-    // lsp::requests::TextDocument_SemanticTokens_Full
-    // lsp::requests::TextDocument_SemanticTokens_Full_Delta
-    // lsp::requests::TextDocument_SemanticTokens_Range
-    // lsp::requests::TextDocument_SignatureHelp
-    // lsp::requests::TextDocument_TypeDefinition
-    // lsp::requests::TextDocument_WillSaveWaitUntil
-    // lsp::requests::TypeHierarchy_Subtypes
-    // lsp::requests::TypeHierarchy_Supertypes
-    // lsp::requests::Window_ShowDocument
-    // lsp::requests::Window_ShowMessageRequest
-    // lsp::requests::Window_WorkDoneProgress_Create
-    // lsp::requests::Workspace_ApplyEdit
-    // lsp::requests::Workspace_CodeLens_Refresh
-    // lsp::requests::Workspace_Configuration
-    // lsp::requests::Workspace_Diagnostic
-    // lsp::requests::Workspace_Diagnostic_Refresh
-    // lsp::requests::Workspace_ExecuteCommand
-    // lsp::requests::Workspace_FoldingRange_Refresh
-    // lsp::requests::Workspace_InlayHint_Refresh
-    // lsp::requests::Workspace_InlineValue_Refresh
-    // lsp::requests::Workspace_SemanticTokens_Refresh
-    // lsp::requests::Workspace_Symbol
-    // lsp::requests::Workspace_WillCreateFiles
-    // lsp::requests::Workspace_WillDeleteFiles
-    // lsp::requests::Workspace_WillRenameFiles
-    // lsp::requests::Workspace_WorkspaceFolders
-    // lsp::requests::WorkspaceSymbol_Resolve
-    // lsp::notifications::CancelRequest
-    // lsp::notifications::LogTrace
-    // lsp::notifications::Progress
-    // lsp::notifications::SetTrace
-    // lsp::notifications::Exit
-    // lsp::notifications::Initialized
-    // lsp::notifications::NotebookDocument_DidChange
-    // lsp::notifications::NotebookDocument_DidClose
-    // lsp::notifications::NotebookDocument_DidOpen
-    // lsp::notifications::NotebookDocument_DidSave
-    // lsp::notifications::Telemetry_Event
-    // lsp::notifications::TextDocument_PublishDiagnostics
-    // lsp::notifications::TextDocument_WillSave
-    // lsp::notifications::Window_LogMessage
-    // lsp::notifications::Window_ShowMessage
-    // lsp::notifications::Window_WorkDoneProgress_Cancel
+    // req::TextDocument_Diagnostic
+    // req::TextDocument_DocumentColor
+    // req::TextDocument_DocumentHighlight
+    // req::TextDocument_DocumentLink
+    // req::TextDocument_DocumentSymbol
+    // req::TextDocument_FoldingRange
+    // req::TextDocument_Formatting
+    // req::TextDocument_Hover
+    // req::TextDocument_Implementation
+    // req::TextDocument_InlayHint
+    // req::TextDocument_InlineCompletion
+    // req::TextDocument_InlineValue
+    // req::TextDocument_LinkedEditingRange
+    // req::TextDocument_Moniker
+    // req::TextDocument_OnTypeFormatting
+    // req::TextDocument_PrepareCallHierarchy
+    // req::TextDocument_PrepareRename
+    // req::TextDocument_PrepareTypeHierarchy
+    // req::TextDocument_RangeFormatting
+    // req::TextDocument_RangesFormatting
+    // req::TextDocument_References
+    // req::TextDocument_Rename
+    // req::TextDocument_SelectionRange
+    // req::TextDocument_SemanticTokens_Full
+    // req::TextDocument_SemanticTokens_Full_Delta
+    // req::TextDocument_SemanticTokens_Range
+    // req::TextDocument_SignatureHelp
+    // req::TextDocument_TypeDefinition
+    // req::TextDocument_WillSaveWaitUntil
+    // req::TypeHierarchy_Subtypes
+    // req::TypeHierarchy_Supertypes
+    // req::Window_ShowDocument
+    // req::Window_ShowMessageRequest
+    // req::Window_WorkDoneProgress_Create
+    // req::Workspace_ApplyEdit
+    // req::Workspace_CodeLens_Refresh
+    // req::Workspace_Configuration
+    // req::Workspace_Diagnostic
+    // req::Workspace_Diagnostic_Refresh
+    // req::Workspace_ExecuteCommand
+    // req::Workspace_FoldingRange_Refresh
+    // req::Workspace_InlayHint_Refresh
+    // req::Workspace_InlineValue_Refresh
+    // req::Workspace_SemanticTokens_Refresh
+    // req::Workspace_Symbol
+    // req::Workspace_WillCreateFiles
+    // req::Workspace_WillDeleteFiles
+    // req::Workspace_WillRenameFiles
+    // req::Workspace_WorkspaceFolders
+    // req::WorkspaceSymbol_Resolve
+    // notif::CancelRequest
+    // notif::LogTrace
+    // notif::Progress
+    // notif::SetTrace
+    // notif::Exit
+    // notif::Telemetry_Event
+    // notif::TextDocument_PublishDiagnostics
+    // notif::TextDocument_WillSave
+    // notif::Window_LogMessage
+    // notif::Window_ShowMessage
+    // notif::Window_WorkDoneProgress_Cancel
 }
 
 // Run Server ----------------------------------------------------------------------
@@ -420,8 +416,8 @@ void Server::compile_files(std::span<const workspace::File*> files){
         auto it = diagnostics_by_file.find(file->path);
         auto path_str = file->path.string();
         const auto& diags = (it != diagnostics_by_file.end()) ? it->second : std::vector<Diagnostic>{};
-        message_handler_.sendNotification<lsp::notifications::TextDocument_PublishDiagnostics>(
-            lsp::notifications::TextDocument_PublishDiagnostics::Params {
+        message_handler_.sendNotification<notif::TextDocument_PublishDiagnostics>(
+            notif::TextDocument_PublishDiagnostics::Params {
                 .uri = lsp::FileUri::fromPath(path_str),
                 .diagnostics = convert_diagnostics(diags)
             }
@@ -518,8 +514,8 @@ void Server::publish_diagnostics(const workspace::ConfigLog& log) {
 
     // Send diagnostics
     for(auto& [file, diags] : fileDiags) {
-        message_handler_.sendNotification<lsp::notifications::TextDocument_PublishDiagnostics>(
-            lsp::notifications::TextDocument_PublishDiagnostics::Params {
+        message_handler_.sendNotification<notif::TextDocument_PublishDiagnostics>(
+            notif::TextDocument_PublishDiagnostics::Params {
                 .uri = lsp::FileUri::fromPath(file.string()),
                 .diagnostics = diags
             }
