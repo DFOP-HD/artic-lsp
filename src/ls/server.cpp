@@ -42,50 +42,65 @@ void Server::send_message(const std::string& message, lsp::MessageType type) {
     );
 }
 
+
+struct InitializeData {
+    std::filesystem::path workspace_root;
+    std::filesystem::path workspace_config_path;
+    std::filesystem::path global_config_path;
+};
+
+static InitializeData parse_initialize_options(const lsp::requests::Initialize::Params& params, Server& log) {
+    InitializeData data;
+
+    if (!params.rootUri.isNull()) {
+        data.workspace_root = std::string(params.rootUri.value().path());
+        
+        if (params.initializationOptions.has_value()) {
+            const auto& any = params.initializationOptions.value();
+            if (any.isObject()) {
+                const auto& obj = any.object();
+                if (auto it = obj.find("workspaceConfig"); it != obj.end() && it->second.isString()) {
+                    data.workspace_config_path = it->second.string();
+                }
+                if (auto it = obj.find("globalConfig"); it != obj.end() && it->second.isString()) {
+                    data.global_config_path = it->second.string();
+                }
+            }
+        } else {
+            log.send_message("No workspace root provided in initialize request", lsp::MessageType::Error);
+        }
+    } else {
+        log.send_message("No root URI provided in initialize request", lsp::MessageType::Error);
+    }
+    return data;
+}
+
 // Server Events ----------------------------------------------------------------------
 
 void Server::setup_events() {
     // Initilalize ----------------------------------------------------------------------
     message_handler_.add<lsp::requests::Initialize>([this](lsp::requests::Initialize::Params&& params) {
-        log::debug( "Received Initialize request");
+        log::debug( "LSP >>> Initialize");
         
-        std::filesystem::path workspace_root;
-        std::filesystem::path workspace_config_path;
-        std::filesystem::path global_config_path;
+        InitializeData init_data = parse_initialize_options(params, *this);
 
-        // Extract workspace root from initialize params
-        if (!params.rootUri.isNull()) {
-            workspace_root = std::string(params.rootUri.value().path());
-            
-            if (params.initializationOptions.has_value()) {
-                const auto& any = params.initializationOptions.value();
-                if (any.isObject()) {
-                    const auto& obj = any.object();
-                    if (auto it = obj.find("workspaceConfig"); it != obj.end() && it->second.isString()) {
-                        workspace_config_path = it->second.string();
-                    }
-                    if (auto it = obj.find("globalConfig"); it != obj.end() && it->second.isString()) {
-                        global_config_path = it->second.string();
-                    }
-                }
-            }
-
-            if(workspace_config_path.empty()) send_message("No local artic.json workspace config", lsp::MessageType::Warning);
-            if(global_config_path.empty())    send_message("No global artic.json config", lsp::MessageType::Warning);        
-        } else {
-            send_message("No workspace root provided in initialize request", lsp::MessageType::Error);
-        }
-
-        log::debug("Workspace root: {}", workspace_root);
-        log::debug("Workspace config path: {}", workspace_config_path);
-        log::debug("Global config path: {}", global_config_path);
-        workspace_ = std::make_unique<workspace::Workspace>(workspace_root, workspace_config_path, global_config_path);
+        if(init_data.workspace_config_path.empty()) send_message("No local artic.json workspace config", lsp::MessageType::Warning);
+        if(init_data.global_config_path.empty())    send_message("No global artic.json config", lsp::MessageType::Warning); 
+        log::debug("Workspace root: {}", init_data.workspace_root);
+        log::debug("Workspace config path: {}", init_data.workspace_config_path);
+        log::debug("Global config path: {}", init_data.global_config_path);
+        workspace_ = std::make_unique<workspace::Workspace>(
+            init_data.workspace_root, 
+            init_data.workspace_config_path, 
+            init_data.global_config_path
+        );
         
         return lsp::requests::Initialize::Result {
             .capabilities = lsp::ServerCapabilities{
                 .textDocumentSync = lsp::TextDocumentSyncOptions{
                     .openClose = true,
-                    .change    = lsp::TextDocumentSyncKind::None
+                    .change    = lsp::TextDocumentSyncKind::Incremental,
+                    .save      = lsp::SaveOptions{ .includeText = false },
                 },
                 .definitionProvider = true
             },
@@ -97,13 +112,13 @@ void Server::setup_events() {
     });
 
     message_handler_.add<lsp::notifications::Initialized>([this](lsp::notifications::Initialized::Params&&){
-        log::debug("Received Initialized notification");
+        log::debug("LSP >>> Initialized");
         reload_workspace();
     });
 
     // Shutdown ----------------------------------------------------------------------
     message_handler_.add<lsp::requests::Shutdown>([this]() {
-        log::debug("Shutdown");
+        log::debug("LSP >>> Shutdown");
         running_ = false;
         return lsp::requests::Shutdown::Result {};
     });
@@ -111,33 +126,40 @@ void Server::setup_events() {
     // Textdocument ----------------------------------------------------------------------
 
     message_handler_.add<lsp::notifications::TextDocument_DidChange>([](lsp::notifications::TextDocument_DidChange::Params&& params) {
-        log::debug("LSP Document Changed");
+        log::debug("LSP >>> TextDocument DidChange");
     });
     message_handler_.add<lsp::notifications::TextDocument_DidClose>([](lsp::notifications::TextDocument_DidClose::Params&& params) {
-        log::debug("LSP Document Closed");
+        log::debug("LSP >>> TextDocument DidClose");
     });
     message_handler_.add<lsp::notifications::TextDocument_DidOpen>([this](lsp::notifications::TextDocument_DidOpen::Params&& params) {
-        log::debug("LSP Document Opened");
+        log::debug("LSP >>> TextDocument DidOpen");
         auto path = std::string(params.textDocument.uri.path());
         compile_file(path);
     });
-    message_handler_.add<lsp::notifications::TextDocument_DidSave>([](lsp::notifications::TextDocument_DidSave::Params&& params) {
-        log::debug("LSP Document Saved");
+    message_handler_.add<lsp::notifications::TextDocument_DidSave>([this](lsp::notifications::TextDocument_DidSave::Params&& params) {
+        log::debug("LSP >>> TextDocument DidSave");
+        auto file = params.textDocument.uri.path();
+        const auto& files = workspace_->projects_.tracked_files;
+        auto it = files.find(file);
+        if(it != files.end()) {
+            it->second->read();
+        }
+        compile_file(file);;
     });
 
     // Workspace ----------------------------------------------------------------------
 
     // lsp::notifications::Workspace_DidChangeConfiguration
     message_handler_.add<lsp::notifications::Workspace_DidChangeConfiguration>([this](lsp::notifications::Workspace_DidChangeConfiguration::Params&& params) {
-        log::debug("LSP Workspace DidChangeConfiguration: triggering config reload");
+        log::debug("LSP >>> Workspace DidChangeConfiguration");
         // Optionally, could inspect params.settings to override paths.
         reload_workspace();
     });
     // lsp::notifications::Workspace_DidChangeWatchedFiles
     message_handler_.add<lsp::notifications::Workspace_DidChangeWatchedFiles>([this](lsp::notifications::Workspace_DidChangeWatchedFiles::Params&& params) {
-        log::debug("LSP Workspace Did Change Watched Files");
+        log::debug("LSP >>> Workspace DidChangeWatchedFiles");
 
-        std::filesystem::path active_file;
+        std::filesystem::path active_file_to_compile;
         for(auto& change : params.changes) {
             auto path = change.uri.path();
 
@@ -154,6 +176,8 @@ void Server::setup_events() {
                     return;
                 }
                 case lsp::FileChangeType::Changed: {
+                    /* Disable cause we do this on_save now to also cover out-of-workspace files
+
                     // update file content
                     const auto& files = workspace_->projects_.tracked_files;
                     auto it = files.find(path);            
@@ -163,6 +187,8 @@ void Server::setup_events() {
 
                     // set active
                     active_file = path;
+
+                    */
                     break;
                 }
                 case lsp::FileChangeType::Deleted: {
@@ -172,8 +198,8 @@ void Server::setup_events() {
                 case lsp::FileChangeType::MAX_VALUE: break;
             }
         }
-        
-        compile_file(active_file);
+        if(!active_file_to_compile.empty()) compile_file(active_file_to_compile);
+
     });
 
     // lsp::notifications::Workspace_DidChangeWorkspaceFolders
@@ -199,6 +225,7 @@ void Server::setup_events() {
     // lsp::requests::TextDocument_Declaration
     // lsp::requests::TextDocument_Definition
     message_handler_.add<lsp::requests::TextDocument_Definition>([this](lsp::requests::TextDocument_Definition::Params&& params) {
+        log::debug("LSP >>> TextDocument Definition");
         // Go-to-definition using Locator from last compilation
         auto uri = params.textDocument.uri;
         auto file_path = std::string(uri.path());
@@ -373,18 +400,10 @@ static lsp::Array<lsp::Diagnostic> convert_diagnostics(const std::vector<Diagnos
         };
         lsp_diag.message = diag.message;
         switch (diag.severity) {
-            case Diagnostic::Error:
-                lsp_diag.severity = lsp::DiagnosticSeverity::Error;
-                break;
-            case Diagnostic::Warning:
-                lsp_diag.severity = lsp::DiagnosticSeverity::Warning;
-                break;
-            case Diagnostic::Information:
-                lsp_diag.severity = lsp::DiagnosticSeverity::Information;
-                break;
-            case Diagnostic::Hint:
-                lsp_diag.severity = lsp::DiagnosticSeverity::Hint;
-                break;
+            case Diagnostic::Error:       lsp_diag.severity = lsp::DiagnosticSeverity::Error;       break;
+            case Diagnostic::Warning:     lsp_diag.severity = lsp::DiagnosticSeverity::Warning;     break;
+            case Diagnostic::Info: lsp_diag.severity = lsp::DiagnosticSeverity::Information; break;
+            case Diagnostic::Hint:        lsp_diag.severity = lsp::DiagnosticSeverity::Hint;        break;
         }
         lsp_diagnostics.push_back(lsp_diag);
     }
@@ -401,7 +420,9 @@ void Server::compile_files(std::span<const workspace::File*> files){
 
     auto compiler = std::make_shared<compiler::CompilerInstance>();
     last_compilation_result_ = compiler::compile_files(files, compiler);
-    compiler->log.print_summary();
+
+    const bool print_compile_log = false;
+    if(print_compile_log) compiler->log.print_summary();
 
     if(last_compilation_result_->stage == compiler::CompileResult::Valid){
         log::debug("Compile success");

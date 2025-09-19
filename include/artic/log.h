@@ -186,22 +186,32 @@ void debug(const char* fmt, Args&&... args) {
 
 } // namespace log
 
-class Locator;
-
 struct Diagnostic {
-    Loc loc;
-    std::string message;
-    enum Severity {
-        Error = 1,
-        Warning = 2,
-        Information = 3,
-        Hint = 4
-    } severity;
+    enum Severity { Error, Warning, Info, Hint };
 
-    Diagnostic(const Loc& loc, const std::string& message, Severity severity)
+    Diagnostic(Severity severity, const std::string& message, const Loc& loc)
         : loc(loc), message(message), severity(severity)
     {}
+
+    template <typename... Args>
+    static Diagnostic format(Diagnostic::Severity severity, const Loc& loc, const char* fmt, Args&&... args) {
+        std::stringbuf buf; 
+        std::ostream str(&buf);
+        log::Output o(str, false);
+        log::format(o, fmt, std::forward<Args>(args)...);
+        return Diagnostic(
+            severity,
+            buf.str(),
+            loc
+        );
+    }
+
+    std::string message;
+    Loc loc;
+    Severity severity;
 };
+
+class Locator;
 
 struct Log {
     Log(log::Output& out, Locator* locator = nullptr, size_t errors = 0, size_t warns = 0)
@@ -239,19 +249,10 @@ struct Logger {
     /// Report an error at the given location in a source file.
     template <typename... Args>
     void error(const Loc& loc, const char* fmt, Args&&... args) {
+        if(is_lsp) 
+            log.diagnostics.push_back(Diagnostic::format(Diagnostic::Error, loc, fmt, std::forward<Args>(args)...));
+
         if (!log.is_full()) {
-            if(is_lsp) {
-                std::stringbuf buf;
-                std::ostream str(&buf);
-                log::Output o(str, false);
-                log::format(o, fmt, std::forward<Args>(args)...);
-                std::string message = buf.str();
-                log.diagnostics.push_back(Diagnostic(
-                    loc,
-                    message,
-                    Diagnostic::Error
-                ));
-            }
             error(fmt, std::forward<Args>(args)...);
             diagnostic(loc, log::Style::Red, '^');
         } else
@@ -261,21 +262,15 @@ struct Logger {
     /// Report a warning at the given location in a source file.
     template <typename... Args>
     void warn(const Loc& loc, const char* fmt, Args&&... args) {
-        if (warns_as_errors)
+        if (warns_as_errors){
             error(loc, fmt, std::forward<Args>(args)...);
-        else if (!log.is_full()) {
-            if (is_lsp) {
-                std::stringbuf buf;
-                std::ostream str(&buf);
-                log::Output o(str, false);
-                log::format(o, fmt, std::forward<Args>(args)...);
-                std::string message = buf.str();
-                log.diagnostics.push_back(Diagnostic(
-                    loc,
-                    message,
-                    Diagnostic::Warning
-                ));
-            }
+            return;
+        }
+
+        if (is_lsp) 
+            log.diagnostics.push_back(Diagnostic::format(Diagnostic::Warning, loc, fmt, std::forward<Args>(args)...));
+
+        if (!log.is_full()) {
             warn(fmt, std::forward<Args>(args)...);
             diagnostic(loc, log::Style::Yellow, '^');
         } else
@@ -285,19 +280,10 @@ struct Logger {
     /// Display a note corresponding to a specific location in a source file.
     template <typename... Args>
     void note(const Loc& loc, const char* fmt, Args&&... args) {
+        if(is_lsp) 
+            log.diagnostics.push_back(Diagnostic::format(Diagnostic::Info, loc, fmt, std::forward<Args>(args)...));
+
         if (!log.is_full()) {
-            if(is_lsp) {
-                std::stringbuf buf;
-                std::ostream str(&buf);
-                log::Output o(str, false);
-                log::format(o, fmt, std::forward<Args>(args)...);
-                std::string message = buf.str();
-                log.diagnostics.push_back(Diagnostic(
-                    loc,
-                    message,
-                    Diagnostic::Information
-                ));
-            } 
             note(fmt, std::forward<Args>(args)...);
             diagnostic(loc, log::Style::Cyan, '-');
         }

@@ -19,7 +19,7 @@ struct CompilerInstance {
     bool enable_all_warns = true;
     
     CompilerInstance() 
-        : arena(), type_table(), locator(), log(log::err, &locator) 
+        : arena(), type_table(), locator(), log(log::err, nullptr/*&locator*/) 
     {
         log.max_errors = 100;
     }
