@@ -287,7 +287,7 @@ static inline InitOptions parse_initialize_options(const reqst::Initialize::Para
 void Server::setup_events() {
     // Initilalize ----------------------------------------------------------------------
     message_handler_.add<reqst::Initialize>([this](reqst::Initialize::Params&& params) {
-        log::info( "LSP >>> Initialize");
+        log::info( "[LSP] <<< Initialize");
         
         InitOptions init_data = parse_initialize_options(params, *this);
 
@@ -319,26 +319,26 @@ void Server::setup_events() {
     });
 
     message_handler_.add<notif::Initialized>([this](notif::Initialized::Params&&){
-        log::info("LSP >>> Initialized");
+        log::info("[LSP] <<< Initialized");
         reload_workspace();
     });
 
     // Shutdown ----------------------------------------------------------------------
     message_handler_.add<reqst::Shutdown>([this]() {
-        log::info("LSP >>> Shutdown");
+        log::info("[LSP] <<< Shutdown");
         running_ = false;
         return reqst::Shutdown::Result {};
     });
 
     // Textdocument ----------------------------------------------------------------------
     message_handler_.add<notif::TextDocument_DidChange>([](notif::TextDocument_DidChange::Params&& params) {
-        log::info("LSP >>> TextDocument DidChange");
+        log::info("[LSP] <<< TextDocument DidChange");
     });
     message_handler_.add<notif::TextDocument_DidClose>([](notif::TextDocument_DidClose::Params&& params) {
-        log::info("LSP >>> TextDocument DidClose");
+        log::info("[LSP] <<< TextDocument DidClose");
     });
     message_handler_.add<notif::TextDocument_DidOpen>([this](notif::TextDocument_DidOpen::Params&& params) {
-        log::info("LSP >>> TextDocument DidOpen");
+        log::info("[LSP] <<< TextDocument DidOpen");
 
         if(get_file_type(params.textDocument.uri.path()) == FileType::Source) {
             auto path = std::string(params.textDocument.uri.path());
@@ -346,7 +346,7 @@ void Server::setup_events() {
         }
     });
     message_handler_.add<notif::TextDocument_DidSave>([this](notif::TextDocument_DidSave::Params&& params) {
-        log::info("LSP >>> TextDocument DidSave");
+        log::info("[LSP] <<< TextDocument DidSave");
         if(get_file_type(params.textDocument.uri.path()) == FileType::Config) {
             reload_workspace();
             return;
@@ -363,12 +363,12 @@ void Server::setup_events() {
     // Workspace ----------------------------------------------------------------------
 
     message_handler_.add<notif::Workspace_DidChangeConfiguration>([this](notif::Workspace_DidChangeConfiguration::Params&& params) {
-        log::info("LSP >>> Workspace DidChangeConfiguration");
+        log::info("[LSP] <<< Workspace DidChangeConfiguration");
         // Optionally, could inspect params.settings to override paths.
         reload_workspace();
     });
     message_handler_.add<notif::Workspace_DidChangeWatchedFiles>([this](notif::Workspace_DidChangeWatchedFiles::Params&& params) {
-        log::info("LSP >>> Workspace DidChangeWatchedFiles");
+        log::info("[LSP] <<< Workspace DidChangeWatchedFiles");
 
         for(auto& change : params.changes) {
             auto path = change.uri.path();
@@ -406,10 +406,12 @@ void Server::setup_events() {
     // req::TextDocument_ColorPresentation
     // req::TextDocument_Completion
     // req::TextDocument_Declaration
-
+    
     message_handler_.add<reqst::TextDocument_Definition>([this](lsp::TextDocumentPositionParams&& pos) -> reqst::TextDocument_Definition::Result {
-        log::info("LSP >>> TextDocument Definition {}:{}:{}", pos.textDocument.uri.path(), pos.position.line, pos.position.character);
-        // Go-to-definition using Locator from last compilation
+        log::info("[LSP] <<< TextDocument Definition {}:{}:{}", pos.textDocument.uri.path(), pos.position.line, pos.position.character);
+        // TODO Currently unsupported:
+        //  - paths resolve to first element (example: `my_mod::func()` -> goes to `my_mod` not `func`)
+        //  - projection expressions         (example: `my_struct_var.field`)
 
         if (!last_compilation_result_ || last_compilation_result_->stage < compiler::CompileResult::NameBinded) {
             return {};
@@ -418,25 +420,31 @@ void Server::setup_events() {
         auto& lsp_definition_map = last_compilation_result_->compiler->name_binder.lsp_definition_map;
 
         for (auto& [key, decl] : lsp_definition_map) {
-            const auto& begin = key->elems.front().id.loc.begin;
-            const auto& end   = key->elems.back().id.loc.end;
             const auto& file = *key->elems.front().id.loc.file;
             if(pos.textDocument.uri.path() != file) continue;
-            if(pos.position.line + 1 < begin.row) continue;
-            if(pos.position.line + 1 > end.row) continue;
-            if(pos.position.line + 1 == begin.row && pos.position.character + 1 < begin.col) continue;
-            if(pos.position.line + 1 == end.row   && pos.position.character + 1 > end.col) continue;
-            // Found a matching key
-            auto def_uri = lsp::FileUri::fromPath(*decl->loc.file);
-            lsp::Location loc {
-                .uri = def_uri,
-                .range = lsp::Range {
-                    .start = lsp::Position { static_cast<lsp::uint>(decl->loc.begin.row - 1), static_cast<lsp::uint>(decl->loc.begin.col - 1) },
-                    .end   = lsp::Position { static_cast<lsp::uint>(decl->loc.end.row   - 1), static_cast<lsp::uint>(decl->loc.end.col   - 1) }
-                }
-            };
-            log::info("LSP <<< return TextDocument Definition {}:{}:{}", loc.uri.path(), loc.range.start.line + 1, loc.range.start.character + 1);
-            return { loc };
+
+            // currently only looks for last member in path
+            for(auto& elem : key->elems){
+                const auto& begin = elem.id.loc.begin;
+                const auto& end   = elem.id.loc.end;
+
+                auto line = pos.position.line + 1;
+                auto col  = pos.position.character + 1;
+                if(line != begin.row || col < begin.col) continue;
+                if(line != end.row   || col > end.col) continue;
+                // Found a matching key
+                if(!decl->loc.file) return {}; // can happen for built-in decls like super::
+                auto def_uri = lsp::FileUri::fromPath(*decl->loc.file);
+                lsp::Location loc {
+                    .uri = def_uri,
+                    .range = lsp::Range {
+                        .start = lsp::Position { static_cast<lsp::uint>(decl->loc.begin.row - 1), static_cast<lsp::uint>(decl->loc.begin.col - 1) },
+                        .end   = lsp::Position { static_cast<lsp::uint>(decl->loc.end.row   - 1), static_cast<lsp::uint>(decl->loc.end.col   - 1) }
+                    }
+                };
+                log::info("[LSP] >>> return TextDocument Definition {}:{}:{}", loc.uri.path(), loc.range.start.line + 1, loc.range.start.character + 1);
+                return { loc };
+            }
         }
         return {};
     });
