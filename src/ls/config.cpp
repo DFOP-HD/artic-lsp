@@ -385,7 +385,8 @@ void Workspace::reload(config::ConfigLog& log) {
                 auto& dep = projects.at(dep_id).project;
                 log_project_info(*dep, p.project->origin);
             } else {
-                log.error("Failed to resolve dependency " + dep_id + " for project " + p.project->name, p.project->name);
+                // log.error("Failed to resolve dependency " + dep_id + " for project " + p.project->name, p.project->name);
+                log.error("Failed to resolve dependency " + dep_id, dep_id);
             }
         }
     }

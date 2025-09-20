@@ -203,7 +203,7 @@ void Server::publish_config_diagnostics(const workspace::config::ConfigLog& log)
 
     auto makeDiag = [](
         const workspace::config::ConfigLog::Message& msg, 
-        std::optional<std::filesystem::path> parent_config,
+        std::optional<std::filesystem::path> propagate_to_file,
         FileDiags& diags
     ) {
         lsp::Diagnostic diag;
@@ -212,12 +212,15 @@ void Server::publish_config_diagnostics(const workspace::config::ConfigLog& log)
         diag.range = lsp::Range{ lsp::Position{0,0}, lsp::Position{0,0} };
         
         auto file = msg.file;
-        if(parent_config) file = parent_config.value();
+        if(propagate_to_file) {
+            if(propagate_to_file.value() == msg.file) return;
+            file = propagate_to_file.value();
+        }
 
         int display_count = 0;
         if(msg.context.has_value()) {
             auto literal = msg.context.value().literal;
-            if(parent_config) literal = "include-projects";
+            if(propagate_to_file) literal = "include-projects";
 
             auto occurrences = find_in_file(file, literal);
             for(auto& occ : occurrences) {
