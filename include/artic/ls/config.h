@@ -32,6 +32,7 @@ struct ProjectDefinition {
     std::filesystem::path origin;
 
     int depth = 100;
+    bool was_defined_in_global_config;
 };
 
 struct IncludeConfig {

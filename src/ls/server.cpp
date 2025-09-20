@@ -408,7 +408,7 @@ void Server::setup_events() {
     // req::TextDocument_Declaration
     
     message_handler_.add<reqst::TextDocument_Definition>([this](lsp::TextDocumentPositionParams&& pos) -> reqst::TextDocument_Definition::Result {
-        log::info("[LSP] <<< TextDocument Definition {}:{}:{}", pos.textDocument.uri.path(), pos.position.line, pos.position.character);
+        log::info("[LSP] <<< TextDocument Definition {}:{}:{}", pos.textDocument.uri.path(), pos.position.line + 1, pos.position.character + 1);
         // TODO Currently unsupported:
         //  - paths resolve to first element (example: `my_mod::func()` -> goes to `my_mod` not `func`)
         //  - projection expressions         (example: `my_struct_var.field`)

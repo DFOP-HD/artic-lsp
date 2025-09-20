@@ -1,5 +1,5 @@
 #include "artic/ls/config.h"
-
+#include "artic/log.h"
 #include <fstream>
 #include <filesystem>
 #include <fnmatch.h>
@@ -26,6 +26,7 @@ struct CollectProjectsData {
 };
 
 static inline void collect_projects_recursive(const config::ConfigDocument& config, CollectProjectsData& data, int depth = 0) {
+    log::info("Collecting projects from config: {}", config.path.string());
     if(data.visited_configs.contains(config.path)) return;
     data.visited_configs.insert(config.path);
 
@@ -156,8 +157,13 @@ static inline std::vector<std::filesystem::path> find_matching_glob(std::filesys
     // Build a regex with case sensitivity aligned to your filesystem
     std::regex re(regex_str, std::regex::ECMAScript);
 
+    int checkedCount = 0;
     // Walk recursively and test relative paths
     for (auto it = std::filesystem::recursive_directory_iterator(root); it != std::filesystem::recursive_directory_iterator(); ++it) {
+        if(checkedCount++ > 100'000) {
+            log.warn("Stopped checking pattern: too many files (>100,000)", glob_pattern);
+            break;
+        }
         const auto& entry = *it;
         if (!entry.is_regular_file()) continue;
 
@@ -215,9 +221,13 @@ static std::shared_ptr<Project> instantiate_project(
 
     // Evaluate include patterns
     for (const auto& pattern : include_patterns) {
+        if(proj_def.was_defined_in_global_config && pattern.find("**") != std::string::npos){
+            log.error("Recursive include patterns are not allowed in global config", pattern);
+            continue;
+        }
         auto matches = find_matching_glob(root_dir, pattern, log);
         if (matches.empty()) {
-            log.warn("empty pattern", pattern);
+            log.warn("0 files", pattern);
             continue;
         } 
         
@@ -235,7 +245,7 @@ static std::shared_ptr<Project> instantiate_project(
     for (const auto& pattern : exclude_patterns) {
         auto matches = find_matching_glob(root_dir, pattern.substr(1), log);
         if (matches.empty()) {
-            log.warn("empty exclude pattern", pattern);
+            log.warn("0 files excluded", pattern);
             continue;
         } 
         auto before = matched_files.size();
@@ -286,15 +296,20 @@ void Workspace::reload(config::ConfigLog& log) {
 
     // Discover projects from global config recursively
     if(global_config_path.empty()) {
-        log.warn("Missing global config: path specified in settings", "<global>");
+        log.warn("Missing global config: no path specified in settings", "<global>");
     }
     else {
         if(auto global_config = config::ConfigDocument::parse(include_global, log)) {
-            collect_projects_recursive(global_config.value(), data);
+            for(auto& proj: global_config->projects){
+                proj.was_defined_in_global_config = true;
+            }
             if(auto& dp = global_config->default_project){
+                dp->was_defined_in_global_config = true;
                 default_project = dp.value();
             }
+            collect_projects_recursive(global_config.value(), data);
         }
+        
         log.info("Global config: " + global_config_path.string(), "<global>");
     }
 
@@ -373,19 +388,19 @@ void Workspace::reload(config::ConfigLog& log) {
     }
 
     // register default project
-    if(auto& dp = default_project){
-        auto project = instantiate_project(dp.value(), projects_.tracked_files, log);
+    if(default_project){
+        auto project = instantiate_project(*default_project, projects_.tracked_files, log);
         log.file_context = project->origin;
         log_project_info(*project, project->origin);
 
-        for (auto& dep_id : dp->dependencies) {
+        for (auto& dep_id : default_project->dependencies) {
             if(projects.contains(dep_id)) {
                 auto& dep = projects.at(dep_id).project;
                 project->dependencies.push_back(dep);            
 
                 log_project_info(*dep, project->origin);
             } else {
-                log.file_context = dp->origin;
+                log.file_context = default_project->origin;
                 log.error("Failed to resolve dependency " + dep_id + " for default project " + project->name, dep_id);
             }
         }
@@ -398,6 +413,8 @@ void Workspace::reload(config::ConfigLog& log) {
         project-> dependencies = {};
         projects_.default_project = project;
     }
+
+
 
     log.file_context = "";
 }
@@ -440,7 +457,7 @@ std::optional<ConfigDocument> ConfigDocument::parse(const IncludeConfig& config,
         if (!j.contains("artic-config")) {
             log.error(
                 "Missing artic-config header\n"
-                "Example: " + nlohmann::json{{"artic-config", "1.0"}}.dump()
+                "Example: \"artic-config\": \"1.0\""
             );
             return std::nullopt;
         }
