@@ -135,55 +135,111 @@ static inline std::string glob_to_regex(const std::string& glob) {
 // *, **, ? as described.
 static inline std::vector<std::filesystem::path> find_matching_glob(std::filesystem::path root, std::string glob_pattern, config::ConfigLog& log) {
     std::vector<std::filesystem::path> results;
+    if(glob_pattern.empty()) return results;
 
-    if (glob_pattern[0] == '/') {
-        root = "";
-    } else if (glob_pattern[0] == '~') {
+    // Handle ~ expansion and absolute patterns (limited support)
+    if (glob_pattern[0] == '~') {
         const char* home = std::getenv("HOME");
         if (home) {
             glob_pattern = glob_pattern.substr(1);
             root = home;
         } else {
-            log.warn("Cannot expand ~ in pattern: " + glob_pattern + "$HOME is undefined", glob_pattern);
+            log.warn("Cannot expand ~ in pattern: " + glob_pattern + " $HOME is undefined", glob_pattern);
             return results;
         }
+    }
+    // If pattern starts with '/', treat it as absolute (reset root)
+    if(!glob_pattern.empty() && glob_pattern[0] == '/') {
+        root = std::filesystem::path("/");
+        // remove leading '/'
+        glob_pattern.erase(0, 1);
     }
 
     if (!std::filesystem::exists(root) || !std::filesystem::is_directory(root)) return results;
 
-    // Convert glob to regex (based on path separators '/')
-    std::string regex_str = glob_to_regex(glob_pattern);
-
-    // Build a regex with case sensitivity aligned to your filesystem
-    std::regex re(regex_str, std::regex::ECMAScript);
-
-    int checkedCount = 0;
-    // Walk recursively and test relative paths
-    for (auto it = std::filesystem::recursive_directory_iterator(root); it != std::filesystem::recursive_directory_iterator(); ++it) {
-        if(checkedCount++ > 100'000) {
-            log.warn("Stopped checking pattern: too many files (>100,000)", glob_pattern);
-            break;
+    // Split pattern into components by '/'
+    std::vector<std::string> parts; parts.reserve(8);
+    {
+        std::string cur; cur.reserve(glob_pattern.size());
+        for(char c : glob_pattern) {
+            if(c == '/') { parts.push_back(cur); cur.clear(); }
+            else cur.push_back(c);
         }
-        const auto& entry = *it;
-        if (!entry.is_regular_file()) continue;
-
-        std::filesystem::path full = entry.path();
-        std::filesystem::path rel;
-        try {
-            rel = std::filesystem::relative(full, root);
-        } catch (...) {
-            continue;
-        }
-
-        // Normalize to POSIX-like form for matching
-        std::string rel_str = rel.generic_string();
-
-        // Check match
-        if (std::regex_match(rel_str, re)) {
-            results.push_back(full);
-        }
+        parts.push_back(cur);
     }
 
+    auto is_wild = [](const std::string& s){ return s.find('*') != std::string::npos || s.find('?') != std::string::npos; };
+
+    // Use DFS to expand pattern component by component.
+    std::unordered_set<std::string> dedup;
+
+    std::function<void(size_t,const std::filesystem::path&)> dfs = [&](size_t idx, const std::filesystem::path& base){
+        if(idx == parts.size()) {
+            // End: if base is a regular file, record it.
+            if(std::filesystem::is_regular_file(base)) {
+                auto norm = std::filesystem::weakly_canonical(base).string();
+                if(dedup.insert(norm).second) results.emplace_back(norm);
+            }
+            return;
+        }        
+
+        const std::string& part = parts[idx];
+
+        // Special case: '**' as its own segment matches zero or more directory levels.
+        if(part == "**") {
+            // 1) Match zero directories
+            dfs(idx+1, base);
+            // 2) Recurse into subdirectories (unbounded)
+            // Guard against huge traversals
+            size_t dir_count = 0;
+            for(auto it = std::filesystem::directory_iterator(base); it != std::filesystem::directory_iterator(); ++it) {
+                if(!it->is_directory()) continue;
+                if(++dir_count > 50'000) { // arbitrary safety cap
+                    log.warn("Stopped expanding '**' due to excessive directories", part);
+                    break;
+                }
+                dfs(idx, it->path()); // stay on same ** index
+            }
+            return;
+        }
+
+        // If last component and refers to a file name directly without wildcards
+        if(!is_wild(part)) {
+            std::filesystem::path next = base / part;
+            if(idx + 1 == parts.size()) {
+                if(std::filesystem::is_regular_file(next)) {
+                    auto norm = std::filesystem::weakly_canonical(next).string();
+                    if(dedup.insert(norm).second) results.emplace_back(norm);
+                }
+                return; // even if it is directory but pattern ended, we only collect files
+            } else {
+                if(std::filesystem::is_directory(next)) {
+                    dfs(idx+1, next);
+                }
+            }
+            return;
+        }
+
+        // Wildcard segment (but not **) -> enumerate entries in this directory only
+        size_t checked = 0;
+        for(auto it = std::filesystem::directory_iterator(base); it != std::filesystem::directory_iterator(); ++it) {
+            if(++checked > 100'000) { log.warn("Stopped expanding wildcard: too many entries", part); break; }
+            const auto& path = it->path();
+            std::string filename = path.filename().string();
+            if(fnmatch(part.c_str(), filename.c_str(), 0) == 0) {
+                if(idx + 1 == parts.size()) {
+                    if(it->is_regular_file()) {
+                        auto norm = std::filesystem::weakly_canonical(path).string();
+                        if(dedup.insert(norm).second) results.emplace_back(norm);
+                    }
+                } else if(it->is_directory()) {
+                    dfs(idx+1, path);
+                }
+            }
+        }
+    };
+
+    dfs(0, root);
     return results;
 }
 
