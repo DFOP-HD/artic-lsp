@@ -76,13 +76,13 @@ void Server::compile_files(std::span<const workspace::File*> files){
     log::info("Compiling {} file(s)", files.size());
 
     auto compiler = std::make_shared<compiler::CompilerInstance>();
-    last_compilation_result_ = compiler->compile_files(files);
-    last_compilation_result_->compiler = compiler;
+    last_compile = compiler->compile_files(files);
+    last_compile->compiler = compiler;
 
     const bool print_compile_log = false;
     if(print_compile_log) compiler->log.print_summary();
 
-    if(last_compilation_result_->stage == compiler::CompileResult::Valid){
+    if(last_compile->stage == compiler::CompileResult::Valid){
         log::info("Compile success");
     } else {
         log::info("Compile failed");
@@ -142,7 +142,7 @@ void Server::compile_file(const std::filesystem::path& file){
         compile_files(files);
 
         // keep the temporary file alive for diagnostics
-        if(last_compilation_result_) last_compilation_result_->temporary_files.push_back(std::move(temp_file));
+        if(last_compile) last_compile->temporary_files.push_back(std::move(temp_file));
     }
 }
 
@@ -345,7 +345,13 @@ void Server::setup_events() {
 
         if(get_file_type(params.textDocument.uri.path()) == FileType::Source) {
             auto path = std::string(params.textDocument.uri.path());
-            compile_file(path);
+            
+            // skip compilation on open when it was already compiled
+            // we need to do this as go to definition shortly opens the text document in vscode 
+            // and we don't want to invalidate the definition while looking it up
+            bool already_compiled = last_compile && last_compile->compiler->locator.data(path);
+            if(!already_compiled)
+                compile_file(path);
         }
     });
     message_handler_.add<notif::TextDocument_DidSave>([this](notif::TextDocument_DidSave::Params&& params) {
@@ -416,11 +422,11 @@ void Server::setup_events() {
         //  - paths resolve to first element (example: `my_mod::func()` -> goes to `my_mod` not `func`)
         //  - projection expressions         (example: `my_struct_var.field`)
 
-        if (!last_compilation_result_ || last_compilation_result_->stage < compiler::CompileResult::NameBinded) {
+        if (!last_compile || last_compile->stage < compiler::CompileResult::NameBinded) {
             return {};
         }
 
-        auto& lsp_definition_map = last_compilation_result_->compiler->name_binder.lsp_definition_map;
+        auto& lsp_definition_map = last_compile->compiler->name_binder.lsp_definition_map;
 
         for (auto& [key, decl] : lsp_definition_map) {
             const auto& file = *key->elems.front().id.loc.file;
