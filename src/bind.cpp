@@ -70,8 +70,12 @@ void Path::bind(NameBinder& binder) {
             binder.error(first.id.loc, "unknown identifier '{}'", first.id.name);
             if (auto similar = binder.find_similar_symbol(first.id.name))
                 binder.note("did you mean '{}'?", similar->decl->id.name);
-        } else
+        } else {
             start_decl = symbol->decl;
+
+            bool is_lsp = true; // TODO
+            if(is_lsp) binder.lsp_definition_map[this] = symbol->decl;
+        }
     }
     // Bind the type arguments of each element
     for (auto& elem : elems) {

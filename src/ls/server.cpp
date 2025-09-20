@@ -76,7 +76,8 @@ void Server::compile_files(std::span<const workspace::File*> files){
     log::info("Compiling {} file(s)", files.size());
 
     auto compiler = std::make_shared<compiler::CompilerInstance>();
-    last_compilation_result_ = compiler::compile_files(files, compiler);
+    last_compilation_result_ = compiler->compile_files(files);
+    last_compilation_result_->compiler = compiler;
 
     const bool print_compile_log = false;
     if(print_compile_log) compiler->log.print_summary();
@@ -122,26 +123,26 @@ void Server::compile_files(std::span<const workspace::File*> files){
 
 void Server::compile_file(const std::filesystem::path& file){
     if(auto proj = workspace_->project_for_file(file)){
-        // known project
-        auto files = proj.value()->collect_files();
+        // known project    
         log::info("Compiling file {} (project '{}')", file, proj.value()->name);
+
+        auto files = proj.value()->collect_files();
         compile_files(files);
     } else {
-        auto default_proj = workspace_->default_project();
         // default project
+        auto default_proj = workspace_->default_project();
+        
         log::info("Compiling file {} (not in workspace -> using default project {})", file, default_proj->name);
         
         auto files = default_proj->collect_files();
-        workspace::File out_of_project_file(file);
-        out_of_project_file.read();
-        files.push_back(&out_of_project_file);
+        auto temp_file = std::make_unique<workspace::File>(file);
+        temp_file->read();
+        files.push_back(temp_file.get());
 
-        // TODO for maintainer
-        // maybe file should not be a temporary here to avoid use after free errors
-        // though i don't think file text should be accessed after compile_files.
-        // However, you could imagine if we do incremental compilation / recompilation at a later stage,
-        // log / locator could try to access the file text, which should be freed at that point (stored as a string_view)
         compile_files(files);
+
+        // keep the temporary file alive for diagnostics
+        if(last_compilation_result_) last_compilation_result_->temporary_files.push_back(std::move(temp_file));
     }
 }
 
@@ -266,7 +267,7 @@ static inline InitOptions parse_initialize_options(const reqst::Initialize::Para
         log.send_message("No root URI provided in initialize request", lsp::MessageType::Error);
         return data;
     }
-    
+
     data.workspace_root = std::string(params.rootUri.value().path());
     
     if (auto init = params.initializationOptions; init.has_value() && init->isObject()) {
@@ -405,73 +406,39 @@ void Server::setup_events() {
     // req::TextDocument_ColorPresentation
     // req::TextDocument_Completion
     // req::TextDocument_Declaration
-    message_handler_.add<reqst::TextDocument_Definition>([this](reqst::TextDocument_Definition::Params&& params) -> reqst::TextDocument_Definition::Result{
-        log::info("LSP >>> TextDocument Definition");
+
+    message_handler_.add<reqst::TextDocument_Definition>([this](lsp::TextDocumentPositionParams&& pos) -> reqst::TextDocument_Definition::Result {
+        log::info("LSP >>> TextDocument Definition {}:{}:{}", pos.textDocument.uri.path(), pos.position.line, pos.position.character);
         // Go-to-definition using Locator from last compilation
-        auto uri = params.textDocument.uri;
-        auto file_path = std::string(uri.path());
-        int req_row1 = static_cast<int>(params.position.line) + 1;      // Loc is 1-based
-        int req_col1 = static_cast<int>(params.position.character) + 1; // Loc is 1-based
 
         if (!last_compilation_result_ || last_compilation_result_->stage < compiler::CompileResult::NameBinded) {
             return {};
         }
 
-        // Use Locator to extract the word at the requested position
-        auto& locator = last_compilation_result_->compiler->locator;
-        auto* info = locator.data(file_path);
-        std::string ident;
-        if (info) {
-            const char* line_start = info->at(req_row1, 1);
-            size_t line_len = info->line_size(req_row1);
-            size_t col = req_col1;
-            if (col < 1 || col > line_len) col = line_len;
-            const char* cursor = info->at(req_row1, col);
-            // Step left if not ident
-            auto is_ident_char = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
-            if (!is_ident_char(*cursor) && col > 1 && is_ident_char(*(cursor - 1))) {
-                --cursor; --col;
-            }
-            if (!is_ident_char(*cursor)) {
-                ident = "";
-            } else {
-                // Expand left
-                const char* L = cursor;
-                while (L > line_start && is_ident_char(*(L - 1))) --L;
-                // Expand right
-                const char* R = cursor;
-                const char* line_end = line_start + line_len;
-                while (R + 1 < line_end && is_ident_char(*(R + 1))) ++R;
-                ident = std::string(L, R - L + 1);
-            }
-        }
+        auto& lsp_definition_map = last_compilation_result_->compiler->name_binder.lsp_definition_map;
 
-        if (ident.empty()) {
-            return {};
+        for (auto& [key, decl] : lsp_definition_map) {
+            const auto& begin = key->elems.front().id.loc.begin;
+            const auto& end   = key->elems.back().id.loc.end;
+            const auto& file = *key->elems.front().id.loc.file;
+            if(pos.textDocument.uri.path() != file) continue;
+            if(pos.position.line + 1 < begin.row) continue;
+            if(pos.position.line + 1 > end.row) continue;
+            if(pos.position.line + 1 == begin.row && pos.position.character + 1 < begin.col) continue;
+            if(pos.position.line + 1 == end.row   && pos.position.character + 1 > end.col) continue;
+            // Found a matching key
+            auto def_uri = lsp::FileUri::fromPath(*decl->loc.file);
+            lsp::Location loc {
+                .uri = def_uri,
+                .range = lsp::Range {
+                    .start = lsp::Position { static_cast<lsp::uint>(decl->loc.begin.row - 1), static_cast<lsp::uint>(decl->loc.begin.col - 1) },
+                    .end   = lsp::Position { static_cast<lsp::uint>(decl->loc.end.row   - 1), static_cast<lsp::uint>(decl->loc.end.col   - 1) }
+                }
+            };
+            log::info("LSP <<< return TextDocument Definition {}:{}:{}", loc.uri.path(), loc.range.start.line + 1, loc.range.start.character + 1);
+            return { loc };
         }
-
-        // Find a matching top-level declaration by name
-        const ast::NamedDecl* target = nullptr;
-        for (const auto& decl : last_compilation_result_->program->decls) {
-            if (auto* nd = decl->isa<ast::NamedDecl>()) {
-                if (nd->id.name == ident) { target = nd; break; }
-            }
-        }
-
-        if (!target || !target->loc.file) {
-            return {};
-        }
-
-        // Build LSP Location from target->loc
-        auto def_uri = lsp::FileUri::fromPath(*target->loc.file);
-        lsp::Location loc {
-            .uri = def_uri,
-            .range = lsp::Range {
-                .start = lsp::Position { static_cast<lsp::uint>(target->loc.begin.row - 1), static_cast<lsp::uint>(target->loc.begin.col - 1) },
-                .end   = lsp::Position { static_cast<lsp::uint>(target->loc.end.row   - 1), static_cast<lsp::uint>(target->loc.end.col   - 1) }
-            }
-        };
-        return { loc };
+        return {};
     });
     // req::TextDocument_Diagnostic
     // req::TextDocument_DocumentColor

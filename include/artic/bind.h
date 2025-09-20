@@ -26,6 +26,8 @@ public:
 
     ~NameBinder() { pop_scope(); }
 
+    std::unordered_map<ast::Path*, ast::NamedDecl*> lsp_definition_map;
+
     /// Performs name binding on a whole program.
     /// Returns true on success, otherwise false.
     bool run(ast::ModDecl&);

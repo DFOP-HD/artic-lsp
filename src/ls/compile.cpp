@@ -42,29 +42,29 @@ struct MemBuf : public std::streambuf {
 
 namespace artic::ls::compiler {
 
-std::unique_ptr<CompileResult> compile_files(std::span<const workspace::File*> files, const std::shared_ptr<CompilerInstance>& compiler) {
-    auto program = compiler->arena.make_ptr<ast::ModDecl>();
+std::unique_ptr<CompileResult> CompilerInstance::compile_files(std::span<const workspace::File*> files) {
+    auto program = arena.make_ptr<ast::ModDecl>();
 
     for (auto& file : files){
         file->read();
         if (!file->text) {
             log::error("cannot open file '{}'", file->path);
-            return std::make_unique<CompileResult>(compiler, nullptr, CompileResult::Invalid);
+            return std::make_unique<CompileResult>(nullptr, CompileResult::Invalid);
         }
-        if (compiler->log.locator)
-            compiler->log.locator->register_file(file->path, file->text.value());
+        if (log.locator)
+            log.locator->register_file(file->path, file->text.value());
 
         MemBuf mem_buf(file->text.value());
         std::istream is(&mem_buf);
 
-        Lexer lexer(compiler->log, file->path, is);
-        Parser parser(compiler->log, lexer, compiler->arena);
-        parser.warns_as_errors = compiler->warns_as_errors;
+        Lexer lexer(log, file->path, is);
+        Parser parser(log, lexer, arena);
+        parser.warns_as_errors = warns_as_errors;
         auto module = parser.parse();
 
-        if(compiler->log.errors > 0) {
+        if(log.errors > 0) {
             log::error("Parsing failed");
-            return std::make_unique<CompileResult>(compiler, std::move(program), CompileResult::Invalid);
+            return std::make_unique<CompileResult>(std::move(program), CompileResult::Invalid);
         } else {
             // log::debug("Parsing completed successfully");
         }
@@ -78,24 +78,23 @@ std::unique_ptr<CompileResult> compile_files(std::span<const workspace::File*> f
 
     program->set_super();
 
-    NameBinder name_binder(compiler->log);
-    name_binder.warns_as_errors = compiler->warns_as_errors;
-    if (compiler->enable_all_warns)
+    name_binder.warns_as_errors = warns_as_errors;
+    if (enable_all_warns)
         name_binder.warn_on_shadowing = true;
 
-    TypeChecker type_checker(compiler->log, compiler->type_table, compiler->arena);
-    type_checker.warns_as_errors = compiler->warns_as_errors;
+    TypeChecker type_checker(log, type_table, arena);
+    type_checker.warns_as_errors = warns_as_errors;
 
-    Summoner summoner(compiler->log, compiler->arena);
+    Summoner summoner(log, arena);
 
     if (!name_binder.run(*program))
-        return std::make_unique<CompileResult>(compiler, std::move(program), CompileResult::Parsed);
+        return std::make_unique<CompileResult>(std::move(program), CompileResult::Parsed);
     if(!type_checker.run(*program))
-        return std::make_unique<CompileResult>(compiler, std::move(program), CompileResult::NameBinded);
+        return std::make_unique<CompileResult>(std::move(program), CompileResult::NameBinded);
     if(!summoner.run(*program))
-        return std::make_unique<CompileResult>(compiler, std::move(program), CompileResult::TypeChecked);
+        return std::make_unique<CompileResult>(std::move(program), CompileResult::TypeChecked);
 
-    return std::make_unique<CompileResult>(compiler, std::move(program), CompileResult::Valid);
+    return std::make_unique<CompileResult>(std::move(program), CompileResult::Valid);
 }
 
 } // namespace artic::ls::compiler
