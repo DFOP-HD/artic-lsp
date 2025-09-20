@@ -9,7 +9,6 @@
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
-#include <regex>
 
 #include <nlohmann/json.hpp>
 
@@ -76,58 +75,6 @@ static inline void collect_projects_recursive(const config::ConfigDocument& conf
             log.info("Path: \"" + include.path.string() + "\"", include.raw_path_string);
         }
     }
-}
-// Convert a glob pattern (with *, **, ?, and path separators) into a regex.
-// This is a simple translator that treats '/' as the path separator and
-// translates:
-//  - *  -> [^/]*          (any sequence of non-slash characters)
-//  - ** -> .*              (any sequence across subdirectories)
-//  - ?  -> [^/]            (single non-slash character)
-//  - Other regex metacharacters are escaped
-static inline std::string glob_to_regex(const std::string& glob) {
-    std::string regex;
-    regex.reserve(glob.size() * 2);
-
-    // Helper to escape regex metacharacters
-    auto escape = [](char c) -> std::string {
-        switch (c) {
-            case '.': case '+': case '^': case '$': case '(': case ')':
-            case '|': case '{': case '}': case '[': case ']': case '\\':
-                return "\\" + std::string(1, c);
-            default:
-                return std::string(1, c);
-        }
-    };
-
-    // Normalize path separators to '/' for matching
-    std::string g = glob;
-    for (char& ch : g) {
-        if (ch == '\\') ch = '/';
-    }
-
-    // Translate
-    for (size_t i = 0; i < g.size(); ) {
-        if (g.compare(i, 2, "**") == 0) {
-            // ** -> match anything including separators
-            regex += ".*";
-            i += 2;
-        } else if (g[i] == '*') {
-            // * -> any sequence of non-slash characters
-            regex += "[^/]*";
-            ++i;
-        } else if (g[i] == '?') {
-            // ? -> any single non-slash character
-            regex += "[^/]";
-            ++i;
-        } else {
-            // Escape other characters
-            regex += escape(g[i]);
-            ++i;
-        }
-    }
-
-    // Anchor to full string
-    return "^" + regex + "$";
 }
 
 // Find all files under root matching the given glob pattern.
