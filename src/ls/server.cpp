@@ -154,6 +154,7 @@ void Server::reload_workspace(const std::string& active_file) {
     workspace_->reload(log);
     // This is somehow blocking. TODO investigate
     publish_config_diagnostics(log);
+    last_compile.reset();
 }
 
 static inline std::vector<lsp::Range> find_in_file(std::filesystem::path const& file, std::string_view literal){
