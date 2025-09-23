@@ -311,11 +311,17 @@ void Workspace::reload(config::ConfigLog& log) {
                 default_project = dp.value();
             }
             collect_projects_recursive(global_config.value(), data);
+
+            log.file_context = workspace_config_path;
+            log.info("Global config: " + global_config_path.string(), "<global>");
+        } else {
+            log.file_context = workspace_config_path;
+            log.error("Invalid global config", "<global>");
         }
-        
-        log.info("Global config: " + global_config_path.string(), "<global>");
     }
 
+    log.file_context = workspace_config_path;
+    
     // Discover projects from local config recursively
     if(workspace_config_path.empty()) {
         log.warn("Missing config: did not find artic.json in workspace");
