@@ -443,7 +443,7 @@ static std::filesystem::path to_absolute_path(const std::filesystem::path& base_
 
 std::optional<ConfigDocument> ConfigDocument::parse(const IncludeConfig& config, ConfigLog& log) {
     if(config.path.empty()){
-        log.error("Config file path is empty", "include-projects");
+        log.error("Config file path is empty", "include");
         return std::nullopt;
     }
     if (!std::filesystem::exists(config.path)) {
@@ -465,6 +465,15 @@ std::optional<ConfigDocument> ConfigDocument::parse(const IncludeConfig& config,
             );
             return std::nullopt;
         }
+        for(auto& [key, value]: j.items()){
+            if(key == "artic-config" || 
+               key == "default-project" || 
+               key == "include" || 
+               key == "projects" 
+            ) continue;
+            log.error("unknown json property \"" + key + "\"", key);
+        }
+
         doc.version = j["artic-config"].get<std::string>();
         if (doc.version != "1.0") {
             log.warn("Unsupported artic-config version (Should be 1.0)", "artic-config");
@@ -499,12 +508,12 @@ std::optional<ConfigDocument> ConfigDocument::parse(const IncludeConfig& config,
         if (auto dpj = j.find("default-project"); dpj != j.end()) {
             doc.default_project = parse_project(*dpj);
         }
-        if (j.contains("include-projects")) {
-            bool missing_global = true;
-            for (auto& incj : j["include-projects"]) {
+        if (j.contains("include")) {
+            bool include_global = false;
+            for (auto& incj : j["include"]) {
                 auto path = incj.get<std::string>();
-                if(missing_global && path == "<global>"){
-                    missing_global = false;
+                if(!include_global && path == "<global>"){
+                    include_global = true;
                     continue;
                 }
                 IncludeConfig include;
@@ -518,9 +527,13 @@ std::optional<ConfigDocument> ConfigDocument::parse(const IncludeConfig& config,
 
                 doc.includes.push_back(std::move(include));
             }
-            if(missing_global) {
-                log.warn("'include-projects' should contain '<global>' to improve readability as global projects are implicitly included", "include-projects");
+            if (config.is_global && include_global) {
+                log.warn("including <global> in the global configuration file has no effect", "<global>");
             }
+            if(!config.is_global && !include_global) {
+                log.warn("add '<global>' to improve readability as global projects are implicitly included", "include");
+            }
+            
         }
         return doc;
     } catch (const std::exception& e) {

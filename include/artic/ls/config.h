@@ -31,6 +31,7 @@ struct ProjectDefinition {
     // config where project was first defined
     std::filesystem::path origin;
 
+    // -- internal parse info --
     int depth = 100;
     bool was_defined_in_global_config = false;
 };
@@ -42,6 +43,7 @@ struct IncludeConfig {
     // -- internal parse info --
     std::string raw_path_string;
     bool is_optional = false;
+    bool is_global = false;
 };
 
 struct ConfigDocument {

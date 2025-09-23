@@ -220,7 +220,7 @@ void Server::publish_config_diagnostics(const workspace::config::ConfigLog& log)
         int display_count = 0;
         if(msg.context.has_value()) {
             auto literal = msg.context.value().literal;
-            if(propagate_to_file) literal = "include-projects";
+            if(propagate_to_file) literal = "include";
 
             auto occurrences = find_in_file(file, literal);
             for(auto& occ : occurrences) {

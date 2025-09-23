@@ -7,6 +7,10 @@ echo "==========================================================================
 cd lsp-framework/ && cmake -DCMAKE_CXX_COMPILER="/usr/bin/clang++" -S . -B build && cmake --build build --parallel
 cd ..
 
+# Path to Thorin CMake: May need to change this on your machine
+THORIN="$HOME/repos/upstream-anydsl/thorin";
+THORIN_DIR="$THORIN/build/share/anydsl/cmake";
+
 # Configure with LSP support
 echo "Configuring CMake with LSP support..."
 cmake -S . -B build \
@@ -15,7 +19,7 @@ cmake -S . -B build \
   -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
   -DARTIC_BUILD_LSP=ON \
   -DCMAKE_BUILD_TYPE=Debug \
-  -DThorin_DIR=$HOME/repos/upstream-anydsl/thorin/build/share/anydsl/cmake # Path to Thorin CMake: May need to change this on your machine
+  -DThorin_DIR=$THORIN_DIR
 
 # Build
 echo "Building..."
