@@ -292,8 +292,8 @@ void Workspace::reload(config::ConfigLog& log) {
     std::map<Project::Identifier, config::ProjectDefinition> project_defs;
     std::optional<config::ProjectDefinition> default_project;
     CollectProjectsData data {.log = log, .projects=project_defs };
-    config::IncludeConfig include_global { .path = global_config_path,    .raw_path_string = "<global>",            .is_optional = false };
-    config::IncludeConfig include_local  { .path = workspace_config_path, .raw_path_string = workspace_config_path, .is_optional = false };
+    config::IncludeConfig include_global { .path = global_config_path,    .raw_path_string = "<global>",            .is_optional = false, .is_global = true };
+    config::IncludeConfig include_local  { .path = workspace_config_path, .raw_path_string = workspace_config_path, .is_optional = false, .is_global = false };
     
     log.file_context = workspace_config_path;
 
@@ -417,8 +417,6 @@ void Workspace::reload(config::ConfigLog& log) {
         project-> dependencies = {};
         projects_.default_project = project;
     }
-
-
 
     log.file_context = "";
 }

@@ -215,6 +215,7 @@ void Server::publish_config_diagnostics(const workspace::config::ConfigLog& log)
         if(propagate_to_file) {
             if(propagate_to_file.value() == msg.file) return;
             file = propagate_to_file.value();
+            diag.message = "[" + msg.file.string() + "] " + diag.message;
         }
 
         int display_count = 0;
