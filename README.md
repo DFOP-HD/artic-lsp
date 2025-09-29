@@ -2,7 +2,7 @@
 
 [![build-and-test](https://github.com/AnyDSL/artic/actions/workflows/build_and_test.yml/badge.svg)](https://github.com/AnyDSL/artic/actions/workflows/build_and_test.yml)
 
-The AlteRnaTive  [Impala](https://github.com/AnyDSL/impala) Compiler.
+Fork of the AlteRnaTive  [Impala](https://github.com/AnyDSL/impala) Compiler with LSP support.
 
 ## Building
 
