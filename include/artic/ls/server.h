@@ -29,7 +29,7 @@ public:
     void compile_files(std::span<const workspace::File*> files);
     void compile_file(const std::filesystem::path& file);
 
-    enum FileType {Source, Config};
+    enum class FileType { SourceFile, ConfigFile };
     static FileType get_file_type(const std::filesystem::path& file);
 
     lsp::Connection connection_;

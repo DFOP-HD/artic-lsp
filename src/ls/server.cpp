@@ -62,7 +62,7 @@ void Server::send_message(const std::string& message, lsp::MessageType type) {
 }
 
 Server::FileType Server::get_file_type(const std::filesystem::path& file) {
-    return file.extension() == ".json" ? Config : Source;
+    return file.extension() == ".json" ? FileType::ConfigFile : FileType::SourceFile;
 }
 
 // Server Compilation / Diagnostics ----------------------------------------------------------------------
@@ -144,6 +144,7 @@ void Server::compile_file(const std::filesystem::path& file){
         // keep the temporary file alive for diagnostics
         if(last_compile) last_compile->temporary_files.push_back(std::move(temp_file));
     }
+    if(last_compile) last_compile->active_file = file;
 }
 
 // Server Reload Workspace ----------------------------------------------------------------------
@@ -154,7 +155,10 @@ void Server::reload_workspace(const std::string& active_file) {
     workspace_->reload(log);
     // This is somehow blocking. TODO investigate
     publish_config_diagnostics(log);
-    last_compile.reset();
+    if(last_compile){
+        auto file = last_compile->active_file;
+        compile_file(file);
+    }
 }
 
 static inline std::vector<lsp::Range> find_in_file(std::filesystem::path const& file, std::string_view literal){
@@ -345,7 +349,7 @@ void Server::setup_events() {
     message_handler_.add<notif::TextDocument_DidOpen>([this](notif::TextDocument_DidOpen::Params&& params) {
         log::info("[LSP] <<< TextDocument DidOpen");
 
-        if(get_file_type(params.textDocument.uri.path()) == FileType::Source) {
+        if(get_file_type(params.textDocument.uri.path()) == FileType::SourceFile) {
             auto path = std::string(params.textDocument.uri.path());
             
             // skip compilation on open when it was already compiled
@@ -358,7 +362,7 @@ void Server::setup_events() {
     });
     message_handler_.add<notif::TextDocument_DidSave>([this](notif::TextDocument_DidSave::Params&& params) {
         log::info("[LSP] <<< TextDocument DidSave");
-        if(get_file_type(params.textDocument.uri.path()) == FileType::Config) {
+        if(get_file_type(params.textDocument.uri.path()) == FileType::ConfigFile) {
             reload_workspace();
             return;
         }
