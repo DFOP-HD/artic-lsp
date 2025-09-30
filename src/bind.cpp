@@ -18,10 +18,11 @@ void NameBinder::bind(ast::Node& node) {
     node.bind(*this);
 }
 
-void NameBinder::pop_scope() {
+void NameBinder::pop_scope(bool warn_on_unused_identifiers) {
     for (auto& pair : scopes_.back().symbols) {
         auto decl = pair.second.decl;
-        if (pair.second.use_count == 0 &&
+        if (warn_on_unused_identifiers &&
+            pair.second.use_count == 0 &&
             !scopes_.back().top_level &&
             !decl->isa<ast::FieldDecl>() &&
             !decl->isa<ast::OptionDecl>()) {
@@ -465,7 +466,8 @@ void FnDecl::bind(NameBinder& binder) {
         if (fn->ret_type)
             binder.bind(*fn->ret_type);
     }
-    binder.pop_scope();
+    bool warn_on_unused_identifiers = fn->body;
+    binder.pop_scope(warn_on_unused_identifiers);
 }
 
 void FieldDecl::bind(NameBinder& binder) {
