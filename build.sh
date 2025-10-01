@@ -8,7 +8,8 @@ cd lsp-framework/ && cmake -DCMAKE_CXX_COMPILER="/usr/bin/clang++" -S . -B build
 cd ..
 
 # Path to Thorin CMake: May need to change this on your machine
-THORIN="$HOME/repos/anydsl/thorin";
+# Should be built wihout LLVM support to avoid unnecessary dependencies
+THORIN="$HOME/repos/upstream-anydsl/thorin";
 THORIN_DIR="$THORIN/build/share/anydsl/cmake";
 
 # Configure with LSP support
