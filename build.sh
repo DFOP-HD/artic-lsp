@@ -14,6 +14,7 @@ THORIN_DIR="$THORIN/build/share/anydsl/cmake";
 # Configure with LSP support
 echo "Configuring CMake with LSP support..."
 cmake -S . -B build \
+  -DBUILD_SHARED_LIBS=OFF \
   -DCMAKE_C_COMPILER=clang \
   -DCMAKE_CXX_COMPILER=clang++ \
   -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
