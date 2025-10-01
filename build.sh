@@ -13,6 +13,7 @@ THORIN_DIR="$THORIN/build/share/anydsl/cmake";
 
 # Configure with LSP support
 echo "Configuring CMake with LSP support..."
+echo $THORIN_DIR
 cmake -S . -B build \
   -DCMAKE_C_COMPILER=clang \
   -DCMAKE_CXX_COMPILER=clang++ \
@@ -20,6 +21,8 @@ cmake -S . -B build \
   -DARTIC_BUILD_LSP=ON \
   -DCMAKE_BUILD_TYPE=Debug \
   -DThorin_DIR=$THORIN_DIR
+
+cp $THORIN/build/lib/libthorin.so build/lib/
 
 # Build
 echo "Building..."
