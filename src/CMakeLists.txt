@@ -72,6 +72,12 @@ if(ARTIC_BUILD_LSP)
     target_compile_definitions(artic PRIVATE 
         ENABLE_LSP=1
     )
+
+    set_target_properties(artic PROPERTIES
+        BUILD_RPATH "$ORIGIN/../lib"
+        INSTALL_RPATH "$ORIGIN/../lib"
+    )
+    target_link_libraries(artic PUBLIC nlohmann_json::nlohmann_json)
 endif()
 
 if (Thorin_HAS_JSON_SUPPORT)
