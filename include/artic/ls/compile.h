@@ -28,7 +28,7 @@ struct CompilerInstance {
     Locator locator;
     Log log;
     NameBinder name_binder;
-    
+
     bool warns_as_errors = false;
     bool enable_all_warns = true;
 };

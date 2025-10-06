@@ -78,6 +78,11 @@ if(ARTIC_BUILD_LSP)
         INSTALL_RPATH "$ORIGIN/../lib"
     )
     target_link_libraries(artic PUBLIC nlohmann_json::nlohmann_json)
+
+    # target_compile_options(libartic PRIVATE -fsanitize=address)
+    # target_link_libraries(libartic PRIVATE -fsanitize=address)
+    # target_compile_options(artic PRIVATE -fsanitize=address)
+    # target_link_libraries(artic PRIVATE -fsanitize=address)
 endif()
 
 if (Thorin_HAS_JSON_SUPPORT)

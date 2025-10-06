@@ -76,6 +76,13 @@ std::unique_ptr<CompileResult> CompilerInstance::compile_files(std::span<const w
         );
     }
 
+    if(log.errors > 0) {
+        log::error("Parsing failed");
+        return std::make_unique<CompileResult>(std::move(program), CompileResult::Invalid);
+    } else {
+        // log::debug("Parsing completed successfully");
+    }
+
     program->set_super();
 
     name_binder.warns_as_errors = warns_as_errors;
@@ -96,5 +103,6 @@ std::unique_ptr<CompileResult> CompilerInstance::compile_files(std::span<const w
 
     return std::make_unique<CompileResult>(std::move(program), CompileResult::Valid);
 }
+
 
 } // namespace artic::ls::compiler

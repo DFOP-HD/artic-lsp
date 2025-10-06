@@ -428,7 +428,7 @@ void Server::setup_events() {
         //  - paths resolve to first element (example: `my_mod::func()` -> goes to `my_mod` not `func`)
         //  - projection expressions         (example: `my_struct_var.field`)
 
-        if (!last_compile || last_compile->stage < compiler::CompileResult::NameBinded) {
+        if (!last_compile || last_compile->stage < compiler::CompileResult::Parsed) {
             return {};
         }
 
@@ -448,6 +448,7 @@ void Server::setup_events() {
                 if(line != begin.row || col < begin.col) continue;
                 if(line != end.row   || col > end.col) continue;
                 // Found a matching key
+
                 if(!decl->loc.file) return {}; // can happen for built-in decls like super::
                 auto def_uri = lsp::FileUri::fromPath(*decl->loc.file);
                 lsp::Location loc {
