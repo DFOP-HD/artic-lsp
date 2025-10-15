@@ -16,7 +16,10 @@ struct CompileResult;
 
 struct CompilerInstance {
     CompilerInstance()
-        : arena(), type_table(), locator(), log(log::err, &locator), name_binder(log) 
+        : arena(), type_table(), locator()
+        , log(log::err, &locator)
+        , names(std::make_unique<NameMap>())
+        , name_binder(log, names.get()) 
     {
         log.max_errors = 100;
     }
@@ -27,6 +30,8 @@ struct CompilerInstance {
     TypeTable type_table;
     Locator locator;
     Log log;
+
+    std::unique_ptr<NameMap> names;
     NameBinder name_binder;
 
     bool warns_as_errors = false;
@@ -43,9 +48,11 @@ struct CompileResult {
         Valid       = 4,
     }; 
 
+    // Output -----
     Ptr<ast::ModDecl> program;
     Stage stage = Invalid;
-
+    
+    // Input -----
     std::shared_ptr<CompilerInstance> compiler; // used to keep compiler alive after compilation TODO make unique_ptr
     std::vector<std::unique_ptr<workspace::File>> temporary_files; // used to keep temporary file alive after compilation
     std::filesystem::path active_file; // used for recompilation when the configuration changes. Could be done in a cleaner way

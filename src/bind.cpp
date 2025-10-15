@@ -74,8 +74,10 @@ void Path::bind(NameBinder& binder) {
         } else 
             start_decl = symbol->decl;
     }
-    const bool is_lsp = true; // TODO
-    if(is_lsp && start_decl) binder.lsp_definition_map[this] = start_decl;
+    if(binder.lsp && start_decl) {
+        binder.lsp->definitions[this] = start_decl;
+        binder.lsp->references.insert({start_decl, this});
+    }
 
     // Bind the type arguments of each element
     for (auto& elem : elems) {

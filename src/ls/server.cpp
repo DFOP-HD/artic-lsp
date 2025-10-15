@@ -437,9 +437,9 @@ void Server::setup_events() {
             return {};
         }
 
-        auto& lsp_definition_map = last_compile->compiler->name_binder.lsp_definition_map;
+        auto* name_map = last_compile->compiler->name_binder.lsp;
 
-        for (auto& [key, decl] : lsp_definition_map) {
+        for (auto& [key, decl] : name_map->definitions) {
             const auto& def_file = *key->elems.front().id.loc.file;
             if(file != def_file) continue;
 

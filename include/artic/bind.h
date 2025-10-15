@@ -12,11 +12,18 @@
 
 namespace artic {
 
+/// Stores information related to LSP go-to-definiton & find-references
+struct NameMap {
+    std::unordered_map<ast::Path*, ast::NamedDecl*>      definitions;
+    std::unordered_multimap<ast::NamedDecl*, ast::Path*> references;
+};
+
 /// Binds identifiers to the nodes of the AST.
 class NameBinder : public Logger {
 public:
-    NameBinder(Log& log)
+    NameBinder(Log& log, NameMap* lsp = nullptr)
         : Logger(log)
+        , lsp(lsp)
         , cur_fn(nullptr)
         , cur_loop(nullptr)
         , cur_mod(nullptr)
@@ -26,7 +33,7 @@ public:
 
     ~NameBinder() { pop_scope(); }
 
-    std::unordered_map<ast::Path*, ast::NamedDecl*> lsp_definition_map;
+    NameMap* lsp;
 
     /// Performs name binding on a whole program.
     /// Returns true on success, otherwise false.
