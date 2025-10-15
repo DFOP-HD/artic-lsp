@@ -428,6 +428,11 @@ void Server::setup_events() {
         //  - paths resolve to first element (example: `my_mod::func()` -> goes to `my_mod` not `func`)
         //  - projection expressions         (example: `my_struct_var.field`)
 
+        std::string file(pos.textDocument.uri.path());
+        bool already_compiled = last_compile && last_compile->compiler->locator.data(file);
+        if(!already_compiled)
+            compile_file(file);
+
         if (!last_compile || last_compile->stage < compiler::CompileResult::Parsed) {
             return {};
         }
@@ -435,8 +440,8 @@ void Server::setup_events() {
         auto& lsp_definition_map = last_compile->compiler->name_binder.lsp_definition_map;
 
         for (auto& [key, decl] : lsp_definition_map) {
-            const auto& file = *key->elems.front().id.loc.file;
-            if(pos.textDocument.uri.path() != file) continue;
+            const auto& def_file = *key->elems.front().id.loc.file;
+            if(file != def_file) continue;
 
             // currently only looks for last member in path
             for(auto& elem : key->elems){
