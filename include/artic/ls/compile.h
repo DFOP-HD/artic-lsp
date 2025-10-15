@@ -18,8 +18,8 @@ struct CompilerInstance {
     CompilerInstance()
         : arena(), type_table(), locator()
         , log(log::err, &locator)
-        , names(std::make_unique<NameMap>())
-        , name_binder(log, names.get()) 
+        , name_map(std::make_unique<NameMap>())
+        , name_binder(log, name_map.get()) 
     {
         log.max_errors = 100;
     }
@@ -31,7 +31,7 @@ struct CompilerInstance {
     Locator locator;
     Log log;
 
-    std::unique_ptr<NameMap> names;
+    std::unique_ptr<NameMap> name_map;
     NameBinder name_binder;
 
     bool warns_as_errors = false;

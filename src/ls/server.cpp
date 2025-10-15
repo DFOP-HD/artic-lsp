@@ -437,9 +437,7 @@ void Server::setup_events() {
             return {};
         }
 
-        auto* name_map = last_compile->compiler->name_binder.lsp;
-
-        for (auto& [key, decl] : name_map->definitions) {
+        for (auto& [key, decl] : last_compile->compiler->name_map->definitions) {
             const auto& def_file = *key->elems.front().id.loc.file;
             if(file != def_file) continue;
 
