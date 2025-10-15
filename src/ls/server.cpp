@@ -293,6 +293,17 @@ static inline InitOptions parse_initialize_options(const reqst::Initialize::Para
     return data;
 }
 
+static inline std::optional<lsp::Location> convert_loc(const Loc& loc){
+    if (!loc.file) return std::nullopt; // can happen for built-in decls like super::
+    return lsp::Location {
+        .uri = lsp::FileUri::fromPath(*loc.file),
+        .range = lsp::Range {
+            .start = lsp::Position { static_cast<lsp::uint>(loc.begin.row - 1), static_cast<lsp::uint>(loc.begin.col - 1) },
+            .end   = lsp::Position { static_cast<lsp::uint>(loc.end.row   - 1), static_cast<lsp::uint>(loc.end.col   - 1) }
+        }
+    };
+}
+
 void Server::setup_events() {
     // Initilalize ----------------------------------------------------------------------
     message_handler_.add<reqst::Initialize>([this](reqst::Initialize::Params&& params) {
@@ -443,32 +454,66 @@ void Server::setup_events() {
             return {};
         }
         auto& names = name_map->files.at(file);
+        auto line = pos.position.line + 1;
+        auto col  = pos.position.character + 1;
 
         for (auto& [key, decl] : names.definitions) {
             // currently only looks for last member in path
             for(auto& elem : key->elems){
                 const auto& begin = elem.id.loc.begin;
                 const auto& end   = elem.id.loc.end;
-
-                auto line = pos.position.line + 1;
-                auto col  = pos.position.character + 1;
+                
                 if(line != begin.row || col < begin.col) continue;
                 if(line != end.row   || col > end.col) continue;
                 // Found a matching key
-
-                if(!decl->loc.file) return {}; // can happen for built-in decls like super::
-                auto def_uri = lsp::FileUri::fromPath(*decl->loc.file);
-                lsp::Location loc {
-                    .uri = def_uri,
-                    .range = lsp::Range {
-                        .start = lsp::Position { static_cast<lsp::uint>(decl->loc.begin.row - 1), static_cast<lsp::uint>(decl->loc.begin.col - 1) },
-                        .end   = lsp::Position { static_cast<lsp::uint>(decl->loc.end.row   - 1), static_cast<lsp::uint>(decl->loc.end.col   - 1) }
-                    }
-                };
-                log::info("[LSP] >>> return TextDocument Definition {}:{}:{}", loc.uri.path(), loc.range.start.line + 1, loc.range.start.character + 1);
-                return { loc };
+                if(auto loc = convert_loc(decl->loc)){
+                    log::info("[LSP] >>> return TextDocument Definition {}:{}:{}", loc->uri.path(), loc->range.start.line + 1, loc->range.start.character + 1);
+                    return { *loc };
+                } else {
+                    log::info("[LSP] >>> return TextDocument Definition has no code file location (maybe builtin or path?)");
+                }
             }
         }
+
+        for (auto& [decl, ref] : names.references) {
+            if (*decl->loc.file != file) continue;
+            log::info("Checking {}", decl->loc);
+            
+            // Check if cursor is on the declaration itself
+            const auto& begin = decl->loc.begin;
+            const auto& end = decl->loc.end;
+            
+            // declarations can be mulitline
+            if(line < begin.row || line > end.row) continue;
+            if(line == begin.row && col < begin.col) continue;
+            if(line == end.row   && col > end.col) continue;
+            if(auto loc = convert_loc(decl->loc)){
+                log::info("[LSP] >>> return TextDocument Definition {}:{}:{}", loc->uri.path(), loc->range.start.line + 1, loc->range.start.character + 1);
+                return { *loc };
+            } else {
+                log::info("[LSP] >>> return TextDocument Definition has no code file location (maybe builtin or path?)");
+            }
+
+            std::vector<lsp::Location> locations;
+
+            auto range = names.references.equal_range(decl);
+            for (auto it = range.first; it != range.second; ++it) {
+                ast::Path* ref_path = it->second;
+                
+                // Get the location of the reference (use the last element of the path)
+                if (ref_path->elems.empty()) continue;
+                
+                const auto& ref_elem = ref_path->elems.back(); // Last element is the actual reference
+
+                if (auto ref_location = convert_loc(ref_elem.id.loc)){
+                    locations.push_back(*ref_location);
+                }
+            }
+
+            log::info("[LSP] >>> Found {} references", locations.size());
+            return locations;
+        }
+
         return {};
     });
 
@@ -496,7 +541,7 @@ void Server::setup_events() {
         // Check both definitions map (for uses) and references map (for declarations)
         ast::NamedDecl* target_decl = nullptr;
         
-        // Check definition map
+        // Cursor on definition -> references
         for (auto& [decl, ref] : names.references) {
             if (*decl->loc.file != file) continue;
             log::info("Checking {}", decl->loc);
@@ -515,7 +560,7 @@ void Server::setup_events() {
             break;
         }
         
-        // Check reference map
+        // Cursor on reference -> more references
         if (!target_decl) {
             // First, check if cursor is on a usage (in definitions map)
             for (auto& [ref, decl] : names.definitions) {
@@ -546,15 +591,10 @@ void Server::setup_events() {
         }
 
         // Include the declaration itself if requested
-        if (params.context.includeDeclaration && target_decl->loc.file) {
-            lsp::Location decl_location {
-                .uri = lsp::FileUri::fromPath(*target_decl->loc.file),
-                .range = lsp::Range {
-                    .start = lsp::Position { static_cast<lsp::uint>(target_decl->loc.begin.row - 1), static_cast<lsp::uint>(target_decl->loc.begin.col - 1) },
-                    .end   = lsp::Position { static_cast<lsp::uint>(target_decl->loc.end.row   - 1), static_cast<lsp::uint>(target_decl->loc.end.col   - 1) }
-                }
-            };
-            locations.push_back(decl_location);
+        if (params.context.includeDeclaration) {
+            if(auto decl_location = convert_loc(target_decl->loc)){
+                locations.push_back(*decl_location);
+            }
         }
 
         // Find all references to this declaration
@@ -566,16 +606,10 @@ void Server::setup_events() {
             if (ref_path->elems.empty()) continue;
             
             const auto& ref_elem = ref_path->elems.back(); // Last element is the actual reference
-            if (!ref_elem.id.loc.file) continue;
 
-            lsp::Location ref_location {
-                .uri = lsp::FileUri::fromPath(*ref_elem.id.loc.file),
-                .range = lsp::Range {
-                    .start = lsp::Position { static_cast<lsp::uint>(ref_elem.id.loc.begin.row - 1), static_cast<lsp::uint>(ref_elem.id.loc.begin.col - 1) },
-                    .end   = lsp::Position { static_cast<lsp::uint>(ref_elem.id.loc.end.row   - 1), static_cast<lsp::uint>(ref_elem.id.loc.end.col   - 1) }
-                }
-            };
-            locations.push_back(ref_location);
+            if (auto ref_location = convert_loc(ref_elem.id.loc)){
+                locations.push_back(*ref_location);
+            }
         }
 
         log::info("[LSP] >>> Found {} references", locations.size());
