@@ -438,10 +438,13 @@ void Server::setup_events() {
             return {};
         }
 
-        for (auto& [key, decl] : last_compile->compiler->name_map->definitions) {
-            const auto& def_file = *key->elems.front().id.loc.file;
-            if(file != def_file) continue;
+        auto& name_map = last_compile->compiler->name_map;
+        if (!name_map || !name_map->files.contains(file)) {
+            return {};
+        }
+        auto& names = name_map->files.at(file);
 
+        for (auto& [key, decl] : names.definitions) {
             // currently only looks for last member in path
             for(auto& elem : key->elems){
                 const auto& begin = elem.id.loc.begin;
@@ -472,7 +475,7 @@ void Server::setup_events() {
     message_handler_.add<reqst::TextDocument_References>([this](lsp::ReferenceParams&& params) -> reqst::TextDocument_References::Result {
         log::info("[LSP] <<< TextDocument References {}:{}:{}", params.textDocument.uri.path(), params.position.line + 1, params.position.character + 1);
 
-        std::string file(params.textDocument.uri.path());
+        auto file = std::string(params.textDocument.uri.path());
         bool already_compiled = last_compile && last_compile->compiler->locator.data(file);
         if(!already_compiled)
             compile_file(file);
@@ -481,12 +484,11 @@ void Server::setup_events() {
             return {};
         }
 
-        if (!last_compile->compiler->name_map) {
+        auto& name_map = last_compile->compiler->name_map;
+        if (!name_map || !name_map->files.contains(file)) {
             return {};
         }
-
-        auto& definitions_map = last_compile->compiler->name_map->definitions;
-        auto& references_map = last_compile->compiler->name_map->references;
+        auto& names = name_map->files.at(file);
 
         std::vector<lsp::Location> locations;
 
@@ -494,46 +496,47 @@ void Server::setup_events() {
         // Check both definitions map (for uses) and references map (for declarations)
         ast::NamedDecl* target_decl = nullptr;
         
-        // First, check if cursor is on a usage (in definitions map)
-        for (auto& [path, decl] : definitions_map) {
-            const auto& def_file = *path->elems.front().id.loc.file;
-            if(file != def_file) continue;
-
-            // Check if cursor is on this path element
-            for(auto& elem : path->elems){
-                const auto& begin = elem.id.loc.begin;
-                const auto& end   = elem.id.loc.end;
-
-                auto line = params.position.line + 1;
-                auto col  = params.position.character + 1;
-                if(line != begin.row || col < begin.col) continue;
-                if(line != end.row   || col > end.col) continue;
-                
-                // Found matching path - this is our target declaration
-                target_decl = decl;
-                break;
-            }
-            if (target_decl) break;
+        // Check definition map
+        for (auto& [decl, ref] : names.references) {
+            if (*decl->loc.file != file) continue;
+            log::info("Checking {}", decl->loc);
+            
+            // Check if cursor is on the declaration itself
+            const auto& begin = decl->loc.begin;
+            const auto& end = decl->loc.end;
+            
+            auto line = params.position.line + 1;
+            auto col = params.position.character + 1;
+            // declarations can be mulitline
+            if(line < begin.row || line > end.row) continue;
+            if(line == begin.row && col < begin.col) continue;
+            if(line == end.row   && col > end.col) continue;
+            target_decl = decl;
+            break;
         }
         
-        // If not found in definitions map, check if cursor is directly on a declaration
+        // Check reference map
         if (!target_decl) {
-            for (auto& [decl, ref_path] : references_map) {
-                if (*decl->loc.file != file) continue;
-                log::info("Checking {}", decl->loc);
-                
-                // Check if cursor is on the declaration itself
-                const auto& begin = decl->loc.begin;
-                const auto& end = decl->loc.end;
-                
-                auto line = params.position.line + 1;
-                auto col = params.position.character + 1;
-                // declarations can be mulitline
-                if(line < begin.row || line > end.row) continue;
-                if(line == begin.row && col < begin.col) continue;
-                if(line == end.row   && col > end.col) continue;
-                target_decl = decl;
-                break;
+            // First, check if cursor is on a usage (in definitions map)
+            for (auto& [ref, decl] : names.definitions) {
+                const auto& def_file = *ref->elems.front().id.loc.file;
+                if(file != def_file) continue;
+
+                // Check if cursor is on this path element
+                for(auto& elem : ref->elems){
+                    const auto& begin = elem.id.loc.begin;
+                    const auto& end   = elem.id.loc.end;
+
+                    auto line = params.position.line + 1;
+                    auto col  = params.position.character + 1;
+                    if(line != begin.row || col < begin.col) continue;
+                    if(line != end.row   || col > end.col) continue;
+                    
+                    // Found matching path - this is our target declaration
+                    target_decl = decl;
+                    break;
+                }
+                if (target_decl) break;
             }
         }
 
@@ -555,7 +558,7 @@ void Server::setup_events() {
         }
 
         // Find all references to this declaration
-        auto range = references_map.equal_range(target_decl);
+        auto range = names.references.equal_range(target_decl);
         for (auto it = range.first; it != range.second; ++it) {
             ast::Path* ref_path = it->second;
             

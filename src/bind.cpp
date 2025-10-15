@@ -74,9 +74,9 @@ void Path::bind(NameBinder& binder) {
         } else 
             start_decl = symbol->decl;
     }
-    if(binder.lsp && start_decl && start_decl->loc.file) {
-        binder.lsp->definitions[this] = start_decl;
-        binder.lsp->references.insert({start_decl, this});
+    if(binder.lsp && start_decl && start_decl->loc.file && first.id.loc.file) {
+        binder.lsp->files[*first.id.loc.file].definitions.insert_or_assign(this, start_decl);
+        binder.lsp->files[*start_decl->loc.file].references.insert({start_decl, this});
     }
 
     // Bind the type arguments of each element
