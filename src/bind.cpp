@@ -74,7 +74,7 @@ void Path::bind(NameBinder& binder) {
         } else 
             start_decl = symbol->decl;
     }
-    if(binder.lsp && start_decl) {
+    if(binder.lsp && start_decl && start_decl->loc.file) {
         binder.lsp->definitions[this] = start_decl;
         binder.lsp->references.insert({start_decl, this});
     }

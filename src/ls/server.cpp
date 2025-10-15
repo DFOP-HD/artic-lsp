@@ -318,7 +318,8 @@ void Server::setup_events() {
                     .change    = lsp::TextDocumentSyncKind::Incremental,
                     .save      = lsp::SaveOptions{ .includeText = false },
                 },
-                .definitionProvider = true
+                .definitionProvider = true,
+                .referencesProvider = true
             },
             .serverInfo = lsp::InitializeResultServerInfo {
                 .name    = "Artic Language Server",
@@ -467,6 +468,117 @@ void Server::setup_events() {
         }
         return {};
     });
+
+    message_handler_.add<reqst::TextDocument_References>([this](lsp::ReferenceParams&& params) -> reqst::TextDocument_References::Result {
+        log::info("[LSP] <<< TextDocument References {}:{}:{}", params.textDocument.uri.path(), params.position.line + 1, params.position.character + 1);
+
+        std::string file(params.textDocument.uri.path());
+        bool already_compiled = last_compile && last_compile->compiler->locator.data(file);
+        if(!already_compiled)
+            compile_file(file);
+
+        if (!last_compile || last_compile->stage < compiler::CompileResult::Parsed) {
+            return {};
+        }
+
+        if (!last_compile->compiler->name_map) {
+            return {};
+        }
+
+        auto& definitions_map = last_compile->compiler->name_map->definitions;
+        auto& references_map = last_compile->compiler->name_map->references;
+
+        std::vector<lsp::Location> locations;
+
+        // Find the declaration at the cursor position
+        // Check both definitions map (for uses) and references map (for declarations)
+        ast::NamedDecl* target_decl = nullptr;
+        
+        // First, check if cursor is on a usage (in definitions map)
+        for (auto& [path, decl] : definitions_map) {
+            const auto& def_file = *path->elems.front().id.loc.file;
+            if(file != def_file) continue;
+
+            // Check if cursor is on this path element
+            for(auto& elem : path->elems){
+                const auto& begin = elem.id.loc.begin;
+                const auto& end   = elem.id.loc.end;
+
+                auto line = params.position.line + 1;
+                auto col  = params.position.character + 1;
+                if(line != begin.row || col < begin.col) continue;
+                if(line != end.row   || col > end.col) continue;
+                
+                // Found matching path - this is our target declaration
+                target_decl = decl;
+                break;
+            }
+            if (target_decl) break;
+        }
+        
+        // If not found in definitions map, check if cursor is directly on a declaration
+        if (!target_decl) {
+            for (auto& [decl, ref_path] : references_map) {
+                if (*decl->loc.file != file) continue;
+                log::info("Checking {}", decl->loc);
+                
+                // Check if cursor is on the declaration itself
+                const auto& begin = decl->loc.begin;
+                const auto& end = decl->loc.end;
+                
+                auto line = params.position.line + 1;
+                auto col = params.position.character + 1;
+                // declarations can be mulitline
+                if(line < begin.row || line > end.row) continue;
+                if(line == begin.row && col < begin.col) continue;
+                if(line == end.row   && col > end.col) continue;
+                target_decl = decl;
+                break;
+            }
+        }
+
+        if (!target_decl) {
+            log::info("[LSP] No declaration found at cursor position");
+            return {};
+        }
+
+        // Include the declaration itself if requested
+        if (params.context.includeDeclaration && target_decl->loc.file) {
+            lsp::Location decl_location {
+                .uri = lsp::FileUri::fromPath(*target_decl->loc.file),
+                .range = lsp::Range {
+                    .start = lsp::Position { static_cast<lsp::uint>(target_decl->loc.begin.row - 1), static_cast<lsp::uint>(target_decl->loc.begin.col - 1) },
+                    .end   = lsp::Position { static_cast<lsp::uint>(target_decl->loc.end.row   - 1), static_cast<lsp::uint>(target_decl->loc.end.col   - 1) }
+                }
+            };
+            locations.push_back(decl_location);
+        }
+
+        // Find all references to this declaration
+        auto range = references_map.equal_range(target_decl);
+        for (auto it = range.first; it != range.second; ++it) {
+            ast::Path* ref_path = it->second;
+            
+            // Get the location of the reference (use the last element of the path)
+            if (ref_path->elems.empty()) continue;
+            
+            const auto& ref_elem = ref_path->elems.back(); // Last element is the actual reference
+            if (!ref_elem.id.loc.file) continue;
+
+            lsp::Location ref_location {
+                .uri = lsp::FileUri::fromPath(*ref_elem.id.loc.file),
+                .range = lsp::Range {
+                    .start = lsp::Position { static_cast<lsp::uint>(ref_elem.id.loc.begin.row - 1), static_cast<lsp::uint>(ref_elem.id.loc.begin.col - 1) },
+                    .end   = lsp::Position { static_cast<lsp::uint>(ref_elem.id.loc.end.row   - 1), static_cast<lsp::uint>(ref_elem.id.loc.end.col   - 1) }
+                }
+            };
+            locations.push_back(ref_location);
+        }
+
+        log::info("[LSP] >>> Found {} references", locations.size());
+        return locations;
+    });
+
     // req::TextDocument_Diagnostic
     // req::TextDocument_DocumentColor
     // req::TextDocument_DocumentHighlight
