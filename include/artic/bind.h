@@ -15,10 +15,14 @@ namespace artic {
 /// Stores information related to LSP go-to-definiton & find-references
 struct NameMap {
     struct Names {
-        std::unordered_map<ast::Path*, ast::NamedDecl*>      definitions;
-        std::unordered_multimap<ast::NamedDecl*, ast::Path*> references;
+        std::unordered_map<ast::Path*, ast::NamedDecl*>      def_of_ref;
+        std::unordered_multimap<ast::NamedDecl*, ast::Path*> refs_of_def;
     };
     std::unordered_map<std::string, Names> files;
+
+    
+    ast::NamedDecl* find_def_at(const Loc& loc);
+    ast::Path*      find_ref_at(const Loc& loc);
 };
 
 /// Binds identifiers to the nodes of the AST.

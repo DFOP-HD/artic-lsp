@@ -3,6 +3,42 @@
 
 namespace artic {
 
+bool contains(const Loc& loc, const Loc& cursor, bool multiline_check){
+    if (loc.begin.row == loc.end.row) multiline_check = false;
+    if (multiline_check) {
+        if(cursor.begin.row < loc.begin.row || cursor.end.row > loc.end.row) return false;
+        return true;
+    } else {
+        if(cursor.begin.row != loc.begin.row || cursor.begin.col < loc.begin.col) return false;
+        if(cursor.end.row   != loc.end.row   || cursor.end.col > loc.end.col) return false;
+        return true;
+    }
+}
+
+ast::NamedDecl* NameMap::find_def_at(const Loc& loc) {
+    if(!loc.file) return nullptr;
+    auto file = files.find(*loc.file);
+    if(file == files.end()) return nullptr;
+    for (auto& [decl, ref] : file->second.refs_of_def) {
+        // Note: Does duplicate checks as this is a multi map. However, the check should be fast enough
+        if(contains(decl->id.loc, loc, false)) return decl;
+    }
+    return nullptr;
+}
+
+ast::Path* NameMap::find_ref_at(const Loc& loc) {
+    if(!loc.file) return nullptr;
+    auto file = files.find(*loc.file);
+    if(file == files.end()) return nullptr;
+    for (auto& [ref, decl] : file->second.def_of_ref) {
+        for(auto& elem : ref->elems) {
+            // ll elements of the path point to a single declaration at this point
+            if(contains(elem.id.loc, loc, false)) return ref;
+        }
+    }
+    return nullptr;
+}
+
 bool NameBinder::run(ast::ModDecl& mod) {
     bind(mod);
     return errors == 0;
@@ -75,8 +111,9 @@ void Path::bind(NameBinder& binder) {
             start_decl = symbol->decl;
     }
     if(binder.lsp && start_decl && start_decl->loc.file && first.id.loc.file) {
-        binder.lsp->files[*first.id.loc.file].definitions.insert_or_assign(this, start_decl);
-        binder.lsp->files[*start_decl->loc.file].references.insert({start_decl, this});
+        binder.lsp->files[*first.id.loc.file].def_of_ref.insert_or_assign(this, start_decl);
+        binder.lsp->files[*start_decl->loc.file].refs_of_def.insert({start_decl, this});
+        log::info("found decl {} {}", start_decl->id.name, start_decl->id.loc);
     }
 
     // Bind the type arguments of each element
