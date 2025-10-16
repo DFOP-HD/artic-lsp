@@ -20,19 +20,19 @@ namespace ls {
 struct NameMap {
     // Either ast::Path or ast::ProjExpr
     struct Names {
-        std::unordered_map<ast::Node*, ast::NamedDecl*> def_of_ref;
-        std::unordered_map<ast::NamedDecl*, std::vector<ast::Node*>> refs_of_def;
-        std::unordered_set<ast::NamedDecl*> all_defs;
+        std::unordered_map<const ast::Node*, const ast::NamedDecl*> def_of_ref;
+        std::unordered_map<const ast::NamedDecl*, std::vector<const ast::Node*>> refs_of_def;
+        std::unordered_set<const ast::NamedDecl*> all_defs;
     };
     std::unordered_map<std::string, Names> files;
 
-    const std::vector<ast::Node*>& find_refs(ast::NamedDecl* decl);
-    ast::NamedDecl* find_def(ast::Node* ref);
+    const std::vector<const ast::Node*>& find_refs(const ast::NamedDecl* decl);
+    const ast::NamedDecl* find_def(const ast::Node* ref);
 
-    ast::NamedDecl* find_def_at(const Loc& loc);
-    ast::Node*      find_ref_at(const Loc& loc);
+    const ast::NamedDecl* find_def_at(const Loc& loc);
+    const ast::Node*      find_ref_at(const Loc& loc);
 
-    const ast::Identifier& get_identifier(ast::Node* ref) {
+    const ast::Identifier& get_identifier(const ast::Node* ref) {
         if (auto path = ref->isa<ast::Path>())
             return path->elems.back().id; 
         if (auto proj = ref->isa<ast::ProjExpr>(); proj && std::holds_alternative<ast::Identifier>(proj->field))

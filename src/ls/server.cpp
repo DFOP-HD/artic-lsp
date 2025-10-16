@@ -341,7 +341,7 @@ std::optional<IndentifierOccurences> find_occurrences_of_identifier(Server& serv
     if (!name_map) return std::nullopt;
 
     Loc cursor_range;
-    ast::NamedDecl* target_decl = name_map->find_def_at(cursor);
+    const ast::NamedDecl* target_decl = name_map->find_def_at(cursor);
     if(target_decl) {
         cursor_range = target_decl->id.loc;
         log::info("found declaration at cursor '{}'", target_decl->id.name);

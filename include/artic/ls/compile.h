@@ -5,6 +5,7 @@
 #include "artic/bind.h"
 #include "artic/ls/workspace.h"
 #include "artic/types.h"
+#include "artic/check.h"
 #include "artic/locator.h"
 #include "artic/log.h"
 #include <memory>
@@ -19,9 +20,14 @@ struct CompilerInstance {
         : arena(), type_table(), locator()
         , log(log::err, &locator)
         , name_map(std::make_unique<NameMap>())
-        , name_binder(log, name_map.get()) 
+        , name_binder(log, name_map.get())
+        , type_checker(log, type_table, arena, name_map.get())
     {
         log.max_errors = 100;
+        type_checker.warns_as_errors = warns_as_errors;
+        name_binder.warns_as_errors = warns_as_errors;
+        if (enable_all_warns)
+            name_binder.warn_on_shadowing = true;
     }
 
     std::unique_ptr<CompileResult> compile_files(std::span<const workspace::File*> files);
@@ -33,6 +39,7 @@ struct CompilerInstance {
 
     std::unique_ptr<NameMap> name_map;
     NameBinder name_binder;
+    TypeChecker type_checker;
 
     bool warns_as_errors = false;
     bool enable_all_warns = true;

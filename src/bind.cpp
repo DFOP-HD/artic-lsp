@@ -18,8 +18,8 @@ bool contains(const Loc& loc, const Loc& cursor, bool multiline_check){
     }
 }
 
-const std::vector<ast::Node*>& NameMap::find_refs(ast::NamedDecl* decl){
-    static const std::vector<ast::Node*> empty;
+const std::vector<const ast::Node*>& NameMap::find_refs(const ast::NamedDecl* decl){
+    static const std::vector<const ast::Node*> empty;
     if (!decl) return empty;
     if(auto names = files.find(*decl->loc.file); names != files.end()) {
         if(auto def = names->second.refs_of_def.find(decl); def != names->second.refs_of_def.end()) {
@@ -29,7 +29,7 @@ const std::vector<ast::Node*>& NameMap::find_refs(ast::NamedDecl* decl){
     return empty;
 }
 
-ast::NamedDecl* NameMap::find_def(ast::Node* ref) {
+const ast::NamedDecl* NameMap::find_def(const ast::Node* ref) {
     if (!ref) return nullptr;
     if(auto names = files.find(*ref->loc.file); names != files.end()) {
         if(auto def = names->second.def_of_ref.find(ref); def != names->second.def_of_ref.end()){
@@ -39,7 +39,7 @@ ast::NamedDecl* NameMap::find_def(ast::Node* ref) {
     return nullptr;
 }
 
-ast::NamedDecl* NameMap::find_def_at(const Loc& loc) {
+const ast::NamedDecl* NameMap::find_def_at(const Loc& loc) {
     if(!loc.file) return nullptr;
     auto file = files.find(*loc.file);
     if(file == files.end()) return nullptr;
@@ -50,7 +50,7 @@ ast::NamedDecl* NameMap::find_def_at(const Loc& loc) {
     return nullptr;
 }
 
-ast::Node* NameMap::find_ref_at(const Loc& loc) {
+const ast::Node* NameMap::find_ref_at(const Loc& loc) {
     if(!loc.file) return nullptr;
     auto file = files.find(*loc.file);
     if(file == files.end()) return nullptr;

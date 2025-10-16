@@ -85,13 +85,6 @@ std::unique_ptr<CompileResult> CompilerInstance::compile_files(std::span<const w
 
     program->set_super();
 
-    name_binder.warns_as_errors = warns_as_errors;
-    if (enable_all_warns)
-        name_binder.warn_on_shadowing = true;
-
-    TypeChecker type_checker(log, type_table, arena);
-    type_checker.warns_as_errors = warns_as_errors;
-
     Summoner summoner(log, arena);
 
     if (!name_binder.run(*program))

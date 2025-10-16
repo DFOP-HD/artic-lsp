@@ -1208,6 +1208,11 @@ const artic::Type* ProjExpr::infer(TypeChecker& checker) {
         expr_type = ptr_type->pointee;
     }
 
+    if (std::holds_alternative<Identifier>(field)){
+        auto& id = std::get<Identifier>(field);
+        log::info("looking at proj: {} at {}", id.name, id.loc);
+    }
+
     const artic::Type* result_type = nullptr;
     auto [type_app, struct_type] = match_app<StructType>(expr_type);
     if (std::holds_alternative<Identifier>(field)) {
@@ -1218,6 +1223,13 @@ const artic::Type* ProjExpr::infer(TypeChecker& checker) {
         if (auto index = struct_type->find_member(field_name)) {
             this->index = *index;
             result_type = member_type(type_app, struct_type, *index);
+            if(checker.name_map) {
+                auto field_decl = struct_type->decl.fields.at(*index).get();
+                auto* decl = dynamic_cast<const ast::NamedDecl*>(field_decl);
+                checker.name_map->files[*this->loc.file].def_of_ref[this] = decl;
+                checker.name_map->files[*decl->loc.file].refs_of_def[decl].push_back(this);
+                log::info("found def of proj: {} at {}", field_name, decl->loc);
+            }
         } else
             return checker.unknown_member(loc, struct_type, field_name);
     } else {
