@@ -367,9 +367,7 @@ std::optional<IndentifierOccurences> find_occurrences_of_identifier(Server& serv
 
     // Find all references to this declaration
     for (auto ref : name_map->find_refs(target_decl)) {
-        auto& ref_elem = ref->elems.front();
-
-        if (auto ref_location = convert_loc(ref_elem.id.loc)){
+        if (auto ref_location = convert_loc(name_map->get_identifier(ref).loc)){
             locations.push_back(*ref_location);
         }
     }
@@ -532,7 +530,7 @@ void Server::setup_events() {
         if(auto* ref = name_map->find_ref_at(*cursor)) {
             auto def = name_map->find_def(ref);
             if(!def) {
-                log::info("[LSP] No declaration found for symbol '{}'", ref->elems.front().id.name);
+                log::info("[LSP] No declaration found for symbol '{}'", name_map->get_identifier(ref).name);
                 return nullptr;    
             }
             if(auto loc = convert_loc(def->id.loc)){

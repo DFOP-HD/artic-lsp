@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <string_view>
+#include <variant>
 #include <vector>
 #include <algorithm>
 
@@ -17,18 +18,27 @@ namespace ls {
 
 /// Stores information related to LSP go-to-definiton & find-references
 struct NameMap {
+    // Either ast::Path or ast::ProjExpr
     struct Names {
-        std::unordered_map<ast::Path*, ast::NamedDecl*> def_of_ref;
-        std::unordered_map<ast::NamedDecl*, std::vector<ast::Path*>> refs_of_def;
+        std::unordered_map<ast::Node*, ast::NamedDecl*> def_of_ref;
+        std::unordered_map<ast::NamedDecl*, std::vector<ast::Node*>> refs_of_def;
         std::unordered_set<ast::NamedDecl*> all_defs;
     };
     std::unordered_map<std::string, Names> files;
 
-    const std::vector<ast::Path*>& find_refs(ast::NamedDecl* decl);
-    ast::NamedDecl* find_def(ast::Path* ref);
+    const std::vector<ast::Node*>& find_refs(ast::NamedDecl* decl);
+    ast::NamedDecl* find_def(ast::Node* ref);
 
     ast::NamedDecl* find_def_at(const Loc& loc);
-    ast::Path*      find_ref_at(const Loc& loc);
+    ast::Node*      find_ref_at(const Loc& loc);
+
+    const ast::Identifier& get_identifier(ast::Node* ref) {
+        if (auto path = ref->isa<ast::Path>())
+            return path->elems.back().id; 
+        if (auto proj = ref->isa<ast::ProjExpr>(); proj && std::holds_alternative<ast::Identifier>(proj->field))
+            return std::get<ast::Identifier>(proj->field);
+        assert(false && "unsupported reference type");
+    }
 };    
 
 } // namespace ls

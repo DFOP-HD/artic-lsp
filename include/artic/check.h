@@ -8,16 +8,18 @@
 #include "artic/types.h"
 #include "artic/log.h"
 #include "artic/array.h"
+#include "artic/bind.h" // TODO only need ls::NameMap, put into separate file
 
 namespace artic {
 
 /// Utility class to perform bidirectional type checking.
 class TypeChecker : public Logger {
 public:
-    TypeChecker(Log& log, TypeTable& type_table, Arena& arena)
-        : Logger(log), type_table(type_table), _arena(arena)
+    TypeChecker(Log& log, TypeTable& type_table, Arena& arena, ls::NameMap* name_map = nullptr)
+        : Logger(log), type_table(type_table), _arena(arena), name_map(name_map)
     {}
 
+    ls::NameMap* name_map;
     TypeTable& type_table;
 
     /// Performs type checking on a whole program.
