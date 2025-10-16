@@ -693,6 +693,8 @@ const artic::Type* Path::infer(TypeChecker& checker, bool value_expected, Ptr<Ex
 
         // Perform a lookup inside the current object if the path is not finished
         if (i != n - 1) {
+            const NamedDecl* name_map_decl = nullptr;
+
             if (elems[i + 1].is_super()) {
                 auto mod_type = type->isa<ModType>();
                 if (!mod_type) {
@@ -700,6 +702,7 @@ const artic::Type* Path::infer(TypeChecker& checker, bool value_expected, Ptr<Ex
                     return checker.type_table.type_error();
                 }
                 type = checker.type_table.mod_type(*mod_type->decl.super);
+                name_map_decl = &mod_type->decl;
             } else if (auto [type_app, enum_type] = match_app<EnumType>(type); enum_type) {
                 auto index = enum_type->find_member(elems[i + 1].id.name);
                 if (!index)
@@ -717,6 +720,8 @@ const artic::Type* Path::infer(TypeChecker& checker, bool value_expected, Ptr<Ex
                     type = is_unit_type(member) ? type : checker.type_table.fn_type(member, type);
                     is_value = is_ctor = true;
                 }
+                // TODO idk if this is correct
+                name_map_decl = enum_type->decl.options[*index].get(); 
             } else if (auto mod_type = type->isa<ModType>()) {
                 auto index = mod_type->find_member(elems[i + 1].id.name);
                 if (!index)
@@ -730,8 +735,14 @@ const artic::Type* Path::infer(TypeChecker& checker, bool value_expected, Ptr<Ex
                     : checker.infer(mod_type->member(*index));
                 is_value = member.isa<ValueDecl>();
                 is_ctor  = member.isa<CtorDecl>();
+                name_map_decl = &member;
             } else
                 return checker.type_expected(elem.loc, type, "module or enum");
+
+            if(checker.name_map && name_map_decl) {
+                log::info("inserting '{}' -> '{}'", elems[i+1].id.name, name_map_decl->loc);
+                checker.name_map->insert(name_map_decl, &elems[i+1].id);
+            }
         }
     }
 

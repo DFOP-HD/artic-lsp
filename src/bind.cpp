@@ -168,11 +168,12 @@ void Path::bind(NameBinder& binder) {
             binder.error(first.id.loc, "unknown identifier '{}'", first.id.name);
             if (auto similar = binder.find_similar_symbol(first.id.name))
                 binder.note("did you mean '{}'?", similar->decl->id.name);
-        } else 
+        } else {
             start_decl = symbol->decl;
+            if(binder.name_map) binder.name_map->insert(start_decl, &first.id);
+        }
     }
-    if(binder.name_map && start_decl) 
-        binder.name_map->insert(start_decl, this);
+    
 
     // Bind the type arguments of each element
     for (auto& elem : elems) {

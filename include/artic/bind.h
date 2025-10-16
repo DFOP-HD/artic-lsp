@@ -17,7 +17,8 @@ namespace artic {
 namespace ls {
 
 /// Stores information related to LSP go-to-definiton & find-references
-struct NameMap {
+class NameMap {
+public:
     using Ref = std::variant<const ast::Path*, const ast::ProjExpr*, const ast::Identifier*>;
     using Decl = const ast::NamedDecl*;
 
