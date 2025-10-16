@@ -2,6 +2,7 @@
 #define ARTIC_BIND_H
 
 #include <unordered_map>
+#include <unordered_set>
 #include <string_view>
 #include <vector>
 #include <algorithm>
@@ -12,27 +13,33 @@
 
 namespace artic {
 
+namespace ls {
+
 /// Stores information related to LSP go-to-definiton & find-references
 struct NameMap {
     struct Names {
         std::unordered_map<ast::Path*, ast::NamedDecl*> def_of_ref;
         std::unordered_map<ast::NamedDecl*, std::vector<ast::Path*>> refs_of_def;
+        std::unordered_set<ast::NamedDecl*> all_defs;
     };
     std::unordered_map<std::string, Names> files;
 
     const std::vector<ast::Path*>& find_refs(ast::NamedDecl* decl);
-    ast::NamedDecl*          find_def(ast::Path* ref);
+    ast::NamedDecl* find_def(ast::Path* ref);
 
     ast::NamedDecl* find_def_at(const Loc& loc);
     ast::Path*      find_ref_at(const Loc& loc);
-};
+};    
+
+} // namespace ls
+
 
 /// Binds identifiers to the nodes of the AST.
 class NameBinder : public Logger {
 public:
-    NameBinder(Log& log, NameMap* lsp = nullptr)
+    NameBinder(Log& log, ls::NameMap* lsp = nullptr)
         : Logger(log)
-        , lsp(lsp)
+        , name_map(lsp)
         , cur_fn(nullptr)
         , cur_loop(nullptr)
         , cur_mod(nullptr)
@@ -42,7 +49,7 @@ public:
 
     ~NameBinder() { pop_scope(); }
 
-    NameMap* lsp;
+    ls::NameMap* name_map;
 
     /// Performs name binding on a whole program.
     /// Returns true on success, otherwise false.

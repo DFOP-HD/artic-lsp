@@ -4,6 +4,8 @@
 
 namespace artic {
 
+namespace ls {
+
 bool contains(const Loc& loc, const Loc& cursor, bool multiline_check){
     if (loc.begin.row == loc.end.row) multiline_check = false;
     if (multiline_check) {
@@ -41,9 +43,9 @@ ast::NamedDecl* NameMap::find_def_at(const Loc& loc) {
     if(!loc.file) return nullptr;
     auto file = files.find(*loc.file);
     if(file == files.end()) return nullptr;
-    for (auto& [decl, ref] : file->second.refs_of_def) {
+    for (auto& [def, ref] : file->second.refs_of_def) {
         // Note: Does duplicate checks as this is a multi map. However, the check should be fast enough
-        if(contains(decl->id.loc, loc, false)) return decl;
+        if(contains(def->id.loc, loc, false)) return def;
     }
     return nullptr;
 }
@@ -60,6 +62,8 @@ ast::Path* NameMap::find_ref_at(const Loc& loc) {
     }
     return nullptr;
 }
+
+} // namespace ls
 
 bool NameBinder::run(ast::ModDecl& mod) {
     bind(mod);
@@ -96,18 +100,21 @@ void NameBinder::insert_symbol(ast::NamedDecl& decl, const std::string& name) {
     assert(!name.empty());
 
     // Do not bind anonymous variables
-    if (name[0] == '_') return;
-
-    auto shadow_symbol = find_symbol(name);
-    if (!scopes_.back().insert(name, Symbol(&decl))) {
-        error(decl.loc, "identifier '{}' already declared", name);
-        note(shadow_symbol->decl->loc, "previously declared here");
-    } else if (
-        warn_on_shadowing && shadow_symbol &&
-        decl.isa<ast::PtrnDecl>() && !shadow_symbol->decl->is_top_level) {
-        warn(decl.loc, "declaration shadows identifier '{}'", name);
-        note(shadow_symbol->decl->loc, "previously declared here");
+    if (name[0] != '_') {
+        auto shadow_symbol = find_symbol(name);
+        if (!scopes_.back().insert(name, Symbol(&decl))) {
+            error(decl.loc, "identifier '{}' already declared", name);
+            note(shadow_symbol->decl->loc, "previously declared here");
+            return;
+        } else if (
+            warn_on_shadowing && shadow_symbol &&
+            decl.isa<ast::PtrnDecl>() && !shadow_symbol->decl->is_top_level) {
+            warn(decl.loc, "declaration shadows identifier '{}'", name);
+            note(shadow_symbol->decl->loc, "previously declared here");
+        } 
     }
+
+    if(name_map && decl.id.loc.file) name_map->files[*decl.id.loc.file].refs_of_def.try_emplace(&decl);
 }
 
 namespace ast {
@@ -132,9 +139,9 @@ void Path::bind(NameBinder& binder) {
         } else 
             start_decl = symbol->decl;
     }
-    if(binder.lsp && start_decl && start_decl->loc.file && first.id.loc.file) {
-        binder.lsp->files[*first.id.loc.file].def_of_ref[this] = start_decl;
-        binder.lsp->files[*start_decl->loc.file].refs_of_def[start_decl].push_back(this);
+    if(binder.name_map && start_decl && start_decl->loc.file && first.id.loc.file) {
+        binder.name_map->files[*first.id.loc.file].def_of_ref[this] = start_decl;
+        binder.name_map->files[*start_decl->loc.file].refs_of_def[start_decl].push_back(this);
     }
 
     // Bind the type arguments of each element

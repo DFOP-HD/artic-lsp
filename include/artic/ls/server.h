@@ -34,7 +34,6 @@ public:
 
     lsp::Connection connection_;
     lsp::MessageHandler message_handler_;
-private:
     bool running_;
     
     // Project management
