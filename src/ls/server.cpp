@@ -535,7 +535,7 @@ void Server::setup_events() {
                 log::info("[LSP] No declaration found for symbol '{}'", ref->elems.front().id.name);
                 return nullptr;    
             }
-            if(auto loc = convert_loc(def->loc)){
+            if(auto loc = convert_loc(def->id.loc)){
                 log::info("[LSP] >>> return TextDocument Definition {}:{}:{}", loc->uri.path(), loc->range.start.line + 1, loc->range.start.character + 1);
                 return { *loc };
             } else {
