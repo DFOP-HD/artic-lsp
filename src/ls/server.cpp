@@ -323,7 +323,7 @@ NameMap* Server::request_name_map(std::string_view file_view) {
     }
 
     auto& name_map = last_compile->compiler->name_map;
-    if (!name_map || !name_map->files.contains(file)) {
+    if (!name_map) {
         return nullptr;
     }
     return name_map.get();
@@ -341,15 +341,15 @@ std::optional<IndentifierOccurences> find_occurrences_of_identifier(Server& serv
     if (!name_map) return std::nullopt;
 
     Loc cursor_range;
-    const ast::NamedDecl* target_decl = name_map->find_def_at(cursor);
+    const ast::NamedDecl* target_decl = name_map->find_decl_at(cursor);
     if(target_decl) {
         cursor_range = target_decl->id.loc;
         log::info("found declaration at cursor '{}'", target_decl->id.name);
     } else {
-        auto ref = name_map->find_ref_at(cursor);
-        if(ref){
-            cursor_range = ref->loc;
-            target_decl = name_map->find_def(ref);
+        if(auto ref = name_map->find_ref_at(cursor)) {
+            auto id = name_map->get_identifier(*ref);
+            cursor_range = id.loc;
+            target_decl = name_map->find_decl(*ref);
             log::info("found reference at cursor '{}'", target_decl->id.name);
         }
     }
@@ -527,10 +527,10 @@ void Server::setup_events() {
         auto* name_map = request_name_map(pos.textDocument.uri.path());
         if (!name_map) return nullptr;
         
-        if(auto* ref = name_map->find_ref_at(*cursor)) {
-            auto def = name_map->find_def(ref);
+        if(auto ref = name_map->find_ref_at(*cursor)) {
+            auto def = name_map->find_decl(*ref);
             if(!def) {
-                log::info("[LSP] No declaration found for symbol '{}'", name_map->get_identifier(ref).name);
+                log::info("[LSP] No declaration found for symbol '{}'", name_map->get_identifier(*ref).name);
                 return nullptr;    
             }
             if(auto loc = convert_loc(def->id.loc)){

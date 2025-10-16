@@ -1222,8 +1222,7 @@ const artic::Type* ProjExpr::infer(TypeChecker& checker) {
             if(checker.name_map) {
                 auto field_decl = struct_type->decl.fields.at(*index).get();
                 auto* decl = dynamic_cast<const ast::NamedDecl*>(field_decl);
-                checker.name_map->files[*this->loc.file].def_of_ref[this] = decl;
-                checker.name_map->files[*decl->loc.file].refs_of_def[decl].push_back(this);
+                checker.name_map->insert(decl, this);
             }
         } else
             return checker.unknown_member(loc, struct_type, field_name);

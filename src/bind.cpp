@@ -2,6 +2,7 @@
 #include "artic/ast.h"
 
 
+
 namespace artic {
 
 namespace ls {
@@ -17,48 +18,81 @@ bool contains(const Loc& loc, const Loc& cursor, bool multiline_check){
         return true;
     }
 }
+using Ref = NameMap::Ref;
+using Decl = NameMap::Decl;
 
-const std::vector<const ast::Node*>& NameMap::find_refs(const ast::NamedDecl* decl){
-    static const std::vector<const ast::Node*> empty;
+void NameMap::insert(Decl decl, Ref ref) {
+    if(!decl || !decl->id.loc.file) return;
+    if(std::visit([](auto&& ref) { return ref == nullptr; }, ref)) return;
+
+    files[*get_identifier(ref).loc.file].declaration_of[ref] = decl;
+    files[*decl->id.loc.file].references_of[decl].push_back(ref);
+}
+
+void NameMap::insert(Decl decl) {
+    if(!decl || !decl->id.loc.file) return;
+    files[*decl->id.loc.file].references_of.emplace(decl, std::vector<Ref>{});
+}
+
+const std::vector<Ref>& NameMap::find_refs(Decl decl) const{
+    static const std::vector<Ref> empty;
     if (!decl) return empty;
     if(auto names = files.find(*decl->loc.file); names != files.end()) {
-        if(auto def = names->second.refs_of_def.find(decl); def != names->second.refs_of_def.end()) {
+        if(auto def = names->second.references_of.find(decl); def != names->second.references_of.end()) {
             return def->second;
         }
     }
     return empty;
 }
 
-const ast::NamedDecl* NameMap::find_def(const ast::Node* ref) {
-    if (!ref) return nullptr;
-    if(auto names = files.find(*ref->loc.file); names != files.end()) {
-        if(auto def = names->second.def_of_ref.find(ref); def != names->second.def_of_ref.end()){
+Decl NameMap::find_decl(Ref ref) const {
+    auto id = get_identifier(ref);
+    if(auto names = files.find(*id.loc.file); names != files.end()) {
+        if(auto def = names->second.declaration_of.find(ref); def != names->second.declaration_of.end()){
             return def->second;
         }
     }
     return nullptr;
 }
 
-const ast::NamedDecl* NameMap::find_def_at(const Loc& loc) {
+Decl NameMap::find_decl_at(const Loc& loc) const {
     if(!loc.file) return nullptr;
     auto file = files.find(*loc.file);
     if(file == files.end()) return nullptr;
-    for (auto& [def, ref] : file->second.refs_of_def) {
+    for (auto& [def, ref] : file->second.references_of) {
         // Note: Does duplicate checks as this is a multi map. However, the check should be fast enough
         if(contains(def->id.loc, loc, false)) return def;
     }
     return nullptr;
 }
 
-const ast::Node* NameMap::find_ref_at(const Loc& loc) {
-    if(!loc.file) return nullptr;
+std::optional<Ref> NameMap::find_ref_at(const Loc& loc) const {
+    if(!loc.file) return std::nullopt;
     auto file = files.find(*loc.file);
-    if(file == files.end()) return nullptr;
-    for (auto& [ref, decl] : file->second.def_of_ref) {
+    if(file == files.end()) return std::nullopt;
+    for (auto& [ref, decl] : file->second.declaration_of) {
         auto id = get_identifier(ref);
         if(contains(id.loc, loc, false)) return ref;
     }
-    return nullptr;
+    return std::nullopt;
+}
+
+const ast::Identifier& NameMap::get_identifier(Ref ref) const {
+    return std::visit([](auto&& ref) -> const ast::Identifier& {
+        using T = std::decay_t<decltype(ref)>;
+        if constexpr (std::is_same_v<T, const ast::Path*>) 
+            return ref->elems.front().id;
+        else if constexpr (std::is_same_v<T, const ast::ProjExpr*>) {
+            if (std::holds_alternative<ast::Identifier>(ref->field)) 
+                return std::get<ast::Identifier>(ref->field);
+            else
+                assert(false && "tuple indices are not supported for go-to-definition");
+        } 
+        else if constexpr (std::is_same_v<T, const ast::Identifier*>) 
+            return *ref;
+        assert(false && "unhandled variant type");
+        return *(const ast::Identifier*)nullptr;
+    }, ref);
 }
 
 } // namespace ls
@@ -112,7 +146,7 @@ void NameBinder::insert_symbol(ast::NamedDecl& decl, const std::string& name) {
         } 
     }
 
-    if(name_map && decl.id.loc.file) name_map->files[*decl.id.loc.file].refs_of_def.try_emplace(&decl);
+    if(name_map) name_map->insert(&decl);
 }
 
 namespace ast {
@@ -137,10 +171,8 @@ void Path::bind(NameBinder& binder) {
         } else 
             start_decl = symbol->decl;
     }
-    if(binder.name_map && start_decl && start_decl->loc.file && first.id.loc.file) {
-        binder.name_map->files[*first.id.loc.file].def_of_ref[this] = start_decl;
-        binder.name_map->files[*start_decl->loc.file].refs_of_def[start_decl].push_back(this);
-    }
+    if(binder.name_map && start_decl) 
+        binder.name_map->insert(start_decl, this);
 
     // Bind the type arguments of each element
     for (auto& elem : elems) {

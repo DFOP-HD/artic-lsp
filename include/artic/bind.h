@@ -1,8 +1,8 @@
 #ifndef ARTIC_BIND_H
 #define ARTIC_BIND_H
 
+#include <optional>
 #include <unordered_map>
-#include <unordered_set>
 #include <string_view>
 #include <variant>
 #include <vector>
@@ -18,27 +18,25 @@ namespace ls {
 
 /// Stores information related to LSP go-to-definiton & find-references
 struct NameMap {
-    // Either ast::Path or ast::ProjExpr
+    using Ref = std::variant<const ast::Path*, const ast::ProjExpr*, const ast::Identifier*>;
+    using Decl = const ast::NamedDecl*;
+
+    void insert(Decl decl, Ref ref);
+    void insert(Decl def);
+
+    const std::vector<Ref>& find_refs(Decl decl) const;
+    Decl find_decl(Ref ref) const;
+
+    Decl find_decl_at(const Loc& loc) const;
+    std::optional<Ref> find_ref_at(const Loc& loc) const;
+
+    const ast::Identifier& get_identifier(Ref ref) const;
+private:
     struct Names {
-        std::unordered_map<const ast::Node*, const ast::NamedDecl*> def_of_ref;
-        std::unordered_map<const ast::NamedDecl*, std::vector<const ast::Node*>> refs_of_def;
-        std::unordered_set<const ast::NamedDecl*> all_defs;
+        std::unordered_map<Ref, Decl> declaration_of;
+        std::unordered_map<Decl, std::vector<Ref>> references_of;
     };
     std::unordered_map<std::string, Names> files;
-
-    const std::vector<const ast::Node*>& find_refs(const ast::NamedDecl* decl);
-    const ast::NamedDecl* find_def(const ast::Node* ref);
-
-    const ast::NamedDecl* find_def_at(const Loc& loc);
-    const ast::Node*      find_ref_at(const Loc& loc);
-
-    const ast::Identifier& get_identifier(const ast::Node* ref) {
-        if (auto path = ref->isa<ast::Path>())
-            return path->elems.back().id; 
-        if (auto proj = ref->isa<ast::ProjExpr>(); proj && std::holds_alternative<ast::Identifier>(proj->field))
-            return std::get<ast::Identifier>(proj->field);
-        assert(false && "unsupported reference type");
-    }
 };    
 
 } // namespace ls
