@@ -46,26 +46,16 @@ struct CompilerInstance {
 };
 
 struct CompileResult {
-    enum Stage {
-        Invalid     = 0,
-        Parsed      = 1,
-        NameBinded  = 2,
-        TypeChecked = 3,
-        Summoned    = 4,
-        Valid       = 4,
-    }; 
-
     // Output -----
     Ptr<ast::ModDecl> program;
-    Stage stage = Invalid;
     
     // Input -----
     std::shared_ptr<CompilerInstance> compiler; // used to keep compiler alive after compilation TODO make unique_ptr
     std::vector<std::unique_ptr<workspace::File>> temporary_files; // used to keep temporary file alive after compilation
     std::filesystem::path active_file; // used for recompilation when the configuration changes. Could be done in a cleaner way
 
-    CompileResult(Ptr<ast::ModDecl> program, Stage stage)
-        : program(program.get()), stage(stage)
+    explicit CompileResult(Ptr<ast::ModDecl> program)
+        : program(program.get())
     {}
 };
 

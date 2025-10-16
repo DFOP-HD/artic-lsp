@@ -44,12 +44,14 @@ namespace artic::ls::compiler {
 
 std::unique_ptr<CompileResult> CompilerInstance::compile_files(std::span<const workspace::File*> files) {
     auto program = arena.make_ptr<ast::ModDecl>();
+    constexpr bool include_non_parsed_files = true;
 
     for (auto& file : files){
         file->read();
+        auto prev_errors = log.errors;
         if (!file->text) {
             log::error("cannot open file '{}'", file->path);
-            return std::make_unique<CompileResult>(nullptr, CompileResult::Invalid);
+            return std::make_unique<CompileResult>(nullptr);
         }
         if (log.locator)
             log.locator->register_file(file->path, file->text.value());
@@ -62,13 +64,12 @@ std::unique_ptr<CompileResult> CompilerInstance::compile_files(std::span<const w
         parser.warns_as_errors = warns_as_errors;
         auto module = parser.parse();
 
-        if(log.errors > 0) {
-            log::error("Parsing failed");
-            return std::make_unique<CompileResult>(std::move(program), CompileResult::Invalid);
+        if(log.errors > prev_errors) {
+            log::error("Parsing failed for file {}", file->path);
+            if(!include_non_parsed_files) continue;
         } else {
-            // log::debug("Parsing completed successfully");
+            log::error("Parsing success for file {}", file->path);
         }
-
         program->decls.insert(
             program->decls.end(),
             std::make_move_iterator(module->decls.begin()),
@@ -78,9 +79,6 @@ std::unique_ptr<CompileResult> CompilerInstance::compile_files(std::span<const w
 
     if(log.errors > 0) {
         log::error("Parsing failed");
-        return std::make_unique<CompileResult>(std::move(program), CompileResult::Invalid);
-    } else {
-        // log::debug("Parsing completed successfully");
     }
 
     program->set_super();
@@ -88,13 +86,13 @@ std::unique_ptr<CompileResult> CompilerInstance::compile_files(std::span<const w
     Summoner summoner(log, arena);
 
     if (!name_binder.run(*program))
-        return std::make_unique<CompileResult>(std::move(program), CompileResult::Parsed);
+        ;// return std::make_unique<CompileResult>(std::move(program));
     if(!type_checker.run(*program))
-        return std::make_unique<CompileResult>(std::move(program), CompileResult::NameBinded);
+        return std::make_unique<CompileResult>(std::move(program));
     if(!summoner.run(*program))
-        return std::make_unique<CompileResult>(std::move(program), CompileResult::TypeChecked);
+        return std::make_unique<CompileResult>(std::move(program));
 
-    return std::make_unique<CompileResult>(std::move(program), CompileResult::Valid);
+    return std::make_unique<CompileResult>(std::move(program));
 }
 
 

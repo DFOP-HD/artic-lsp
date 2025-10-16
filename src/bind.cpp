@@ -129,7 +129,7 @@ void NameBinder::pop_scope(bool warn_on_unused_identifiers) {
 
 void NameBinder::insert_symbol(ast::NamedDecl& decl, const std::string& name) {
     assert(!scopes_.empty());
-    assert(!name.empty());
+    if(name.empty()) return; // can happen if there was a parse error
 
     // Do not bind anonymous variables
     if (name[0] != '_') {

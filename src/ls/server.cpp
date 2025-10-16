@@ -81,7 +81,7 @@ void Server::compile_files(std::span<const workspace::File*> files){
     const bool print_compile_log = false;
     if(print_compile_log) compiler->log.print_summary();
 
-    if(last_compile->stage == compiler::CompileResult::Valid){
+    if(last_compile->compiler->log.errors == 0){
         log::info("Compile success");
     } else {
         log::info("Compile failed");
@@ -313,13 +313,8 @@ Loc convert_loc(const lsp::TextDocumentIdentifier& file, const lsp::Position& po
 NameMap* Server::request_name_map(std::string_view file_view) {
     std::string file(file_view);
     bool already_compiled = last_compile && last_compile->compiler->locator.data(file);
-    if(!already_compiled)
-        compile_file(file);
-
-    if (!last_compile || last_compile->stage < compiler::CompileResult::Parsed) {
-        log::info("[LSP] >>> No sufficient compile");
-        return nullptr;
-    }
+    if (!already_compiled) compile_file(file);
+    if (!last_compile) throw lsp::RequestError(lsp::Error::InternalError, "Did not get a compilation result");
 
     auto& name_map = last_compile->compiler->name_map;
     if (!name_map) {

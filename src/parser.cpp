@@ -48,6 +48,10 @@ Ptr<ast::Decl> Parser::parse_decl(bool is_top_level) {
         case Token::Use:      decl = parse_use_decl();      break;
         default:              decl = parse_error_decl();    break;
     }
+    if(!decl) {
+        Tracker tracker(this);
+        decl = _arena.make_ptr<ast::ErrorDecl>(tracker());
+    }
     decl->attrs = std::move(attrs);
     decl->is_top_level = is_top_level;
     return decl;
