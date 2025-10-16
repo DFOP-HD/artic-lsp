@@ -43,6 +43,7 @@ private:
 
     void reload_workspace(const std::string& active_file = {});
     void publish_config_diagnostics(const workspace::config::ConfigLog& log);
+    NameMap* request_name_map(std::string_view file);
 };
 
 } // namespace artic::ls

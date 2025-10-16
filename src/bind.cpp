@@ -1,6 +1,7 @@
 #include "artic/bind.h"
 #include "artic/ast.h"
 
+
 namespace artic {
 
 bool contains(const Loc& loc, const Loc& cursor, bool multiline_check){
@@ -13,6 +14,27 @@ bool contains(const Loc& loc, const Loc& cursor, bool multiline_check){
         if(cursor.end.row   != loc.end.row   || cursor.end.col > loc.end.col) return false;
         return true;
     }
+}
+
+const std::vector<ast::Path*>& NameMap::find_refs(ast::NamedDecl* decl){
+    static const std::vector<ast::Path*> empty;
+    if (!decl) return empty;
+    if(auto names = files.find(*decl->loc.file); names != files.end()) {
+        if(auto def = names->second.refs_of_def.find(decl); def != names->second.refs_of_def.end()) {
+            return def->second;
+        }
+    }
+    return empty;
+}
+
+ast::NamedDecl* NameMap::find_def(ast::Path* ref) {
+    if (!ref) return nullptr;
+    if(auto names = files.find(*ref->loc.file); names != files.end()) {
+        if(auto def = names->second.def_of_ref.find(ref); def != names->second.def_of_ref.end()){
+            return def->second;
+        }
+    }
+    return nullptr;
 }
 
 ast::NamedDecl* NameMap::find_def_at(const Loc& loc) {
@@ -111,9 +133,8 @@ void Path::bind(NameBinder& binder) {
             start_decl = symbol->decl;
     }
     if(binder.lsp && start_decl && start_decl->loc.file && first.id.loc.file) {
-        binder.lsp->files[*first.id.loc.file].def_of_ref.insert_or_assign(this, start_decl);
-        binder.lsp->files[*start_decl->loc.file].refs_of_def.insert({start_decl, this});
-        log::info("found decl {} {}", start_decl->id.name, start_decl->id.loc);
+        binder.lsp->files[*first.id.loc.file].def_of_ref[this] = start_decl;
+        binder.lsp->files[*start_decl->loc.file].refs_of_def[start_decl].push_back(this);
     }
 
     // Bind the type arguments of each element
