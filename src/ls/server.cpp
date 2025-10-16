@@ -542,7 +542,7 @@ void Server::setup_events() {
             }
         }
 
-        auto occurences = find_occurrences_of_identifier(*this, *cursor, true);
+        auto occurences = find_occurrences_of_identifier(*this, *cursor, false);
         if(!occurences) return {};
         log::info("[LSP] >>> Found {} occurrences of identifier", occurences->all_occurences.size());
         return occurences->all_occurences;

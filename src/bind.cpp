@@ -572,6 +572,7 @@ void FieldDecl::bind(NameBinder& binder) {
     binder.bind(*type);
     if (init)
         binder.bind(*init);
+    if(binder.name_map) binder.name_map->insert(this);
 }
 
 void StructDecl::bind_head(NameBinder& binder) {

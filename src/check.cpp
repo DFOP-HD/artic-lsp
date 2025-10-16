@@ -366,6 +366,7 @@ void TypeChecker::check_fields(
         seen[*index] = true;
         fields[i]->index = *index;
         check(*fields[i], member_type(type_app, struct_type, *index));
+        if(name_map) name_map->insert(struct_type->decl.fields[*index].get(), &fields[i]->id);
     }
     // Check that all fields have been specified, unless '...' was used
     if (!has_etc && !std::all_of(seen.begin(), seen.end(), [] (bool b) { return b; })) {
@@ -740,7 +741,6 @@ const artic::Type* Path::infer(TypeChecker& checker, bool value_expected, Ptr<Ex
                 return checker.type_expected(elem.loc, type, "module or enum");
 
             if(checker.name_map && name_map_decl) {
-                log::info("inserting '{}' -> '{}'", elems[i+1].id.name, name_map_decl->loc);
                 checker.name_map->insert(name_map_decl, &elems[i+1].id);
             }
         }
