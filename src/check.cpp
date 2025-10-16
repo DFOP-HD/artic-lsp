@@ -1218,6 +1218,7 @@ const artic::Type* ProjExpr::infer(TypeChecker& checker) {
         if (auto index = struct_type->find_member(field_name)) {
             this->index = *index;
             result_type = member_type(type_app, struct_type, *index);
+            // Register name for lsp
             if(checker.name_map) {
                 auto field_decl = struct_type->decl.fields.at(*index).get();
                 auto* decl = dynamic_cast<const ast::NamedDecl*>(field_decl);
