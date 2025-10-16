@@ -5,6 +5,7 @@
 #include "artic/ls/workspace.h"
 #include "artic/log.h"
 #include "artic/ast.h"
+#include "lsp/error.h"
 
 #include <lsp/types.h>
 #include <lsp/io/standardio.h>
@@ -38,19 +39,17 @@ Server::~Server() = default;
 
 int Server::run() {
     log::info("LSP Server starting...");
-    try {        
-        running_ = true;
-        while (running_) {
-            try {
-                message_handler_.processIncomingMessages();
-                // std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            } catch (const std::exception& e) {
-                log::info("LSP Message processing error: {}", e.what());
-            }
+    running_ = true;
+    while (running_) {
+        try {
+            message_handler_.processIncomingMessages();
+            // std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        } catch (const lsp::RequestError& e) {
+            log::info("LSP Message processing error: {}", e.what());
+        } catch (...) {
+            log::info("LSP Server unknown fatal error");
+            return 1;
         }
-    } catch (...) {
-        log::info("LSP Server unknown fatal error");
-        return 1;
     }
 
     log::info("LSP Server shutdown complete");
@@ -269,7 +268,7 @@ struct InitOptions {
     std::filesystem::path global_config_path;
 };
 
-static inline InitOptions parse_initialize_options(const reqst::Initialize::Params& params, Server& log) {
+InitOptions parse_initialize_options(const reqst::Initialize::Params& params, Server& log) {
     InitOptions data;
 
     if (params.rootUri.isNull()) {
@@ -293,8 +292,8 @@ static inline InitOptions parse_initialize_options(const reqst::Initialize::Para
     return data;
 }
 
-static inline std::optional<lsp::Location> convert_loc(const Loc& loc){
-    if (!loc.file) return std::nullopt; // can happen for built-in decls like super::
+lsp::Location convert_loc(const Loc& loc){
+    if (!loc.file) throw lsp::RequestError(lsp::Error::InternalError, "Cannot convert location with undefined file");
     return lsp::Location {
         .uri = lsp::FileUri::fromPath(*loc.file),
         .range = lsp::Range {
@@ -304,7 +303,7 @@ static inline std::optional<lsp::Location> convert_loc(const Loc& loc){
     };
 }
 
-static inline std::optional<Loc> convert_loc(const lsp::TextDocumentIdentifier& file, const lsp::Position& pos) {
+Loc convert_loc(const lsp::TextDocumentIdentifier& file, const lsp::Position& pos) {
     return Loc(
         std::make_shared<std::string>(file.uri.path()),
         Loc::Pos { .row = static_cast<int>(pos.line + 1), .col = static_cast<int>(pos.character + 1) }
@@ -360,24 +359,18 @@ std::optional<IndentifierOccurences> find_occurrences_of_identifier(Server& serv
 
     // Include the declaration itself if requested
     if (include_declaration) {
-        if(auto decl_location = convert_loc(target_decl->id.loc)){
-            locations.push_back(*decl_location);
-        }
+        locations.push_back(convert_loc(target_decl->id.loc));
     }
 
     // Find all references to this declaration
     for (auto ref : name_map->find_refs(target_decl)) {
-        if (auto ref_location = convert_loc(name_map->get_identifier(ref).loc)){
-            locations.push_back(*ref_location);
-        }
+        locations.push_back(convert_loc(name_map->get_identifier(ref).loc));
     }
-
-    if(locations.empty()) return std::nullopt;
 
     return IndentifierOccurences {
         .name = target_decl->id.name,
-        .cursor_range = convert_loc(cursor_range).value_or(lsp::Location{}),
-        .declaration_range = convert_loc(target_decl->id.loc).value_or(lsp::Location{}),
+        .cursor_range = convert_loc(cursor_range),
+        .declaration_range = convert_loc(target_decl->id.loc),
         .all_occurences = locations
     };
 }
@@ -517,43 +510,36 @@ void Server::setup_events() {
     
     message_handler_.add<reqst::TextDocument_Definition>([this](lsp::TextDocumentPositionParams&& pos) -> reqst::TextDocument_Definition::Result {
         log::info("[LSP] <<< TextDocument Definition {}:{}:{}", pos.textDocument.uri.path(), pos.position.line + 1, pos.position.character + 1);
-        // TODO Currently unsupported:
-        //  - paths resolve to first element (example: `my_mod::func()` -> goes to `my_mod` not `func`)
-        //  - projection expressions         (example: `my_struct_var.field`)
 
         auto cursor = convert_loc(pos.textDocument, pos.position);
-        if(!cursor) return nullptr;
 
         auto* name_map = request_name_map(pos.textDocument.uri.path());
         if (!name_map) return nullptr;
         
-        if(auto ref = name_map->find_ref_at(*cursor)) {
-            auto def = name_map->find_decl(*ref);
-            if(!def) {
-                log::info("[LSP] No declaration found for symbol '{}'", name_map->get_identifier(*ref).name);
-                return nullptr;    
+        // When on a reference try find declaration
+        if(auto ref = name_map->find_ref_at(cursor)) {
+            if(auto def = name_map->find_decl(*ref)) {
+                auto loc = convert_loc(def->id.loc);
+                log::info("[LSP] >>> return TextDocument Definition {}:{}:{}", loc.uri.path(), loc.range.start.line + 1, loc.range.start.character + 1);
+                return { loc };
             }
-            if(auto loc = convert_loc(def->id.loc)){
-                log::info("[LSP] >>> return TextDocument Definition {}:{}:{}", loc->uri.path(), loc->range.start.line + 1, loc->range.start.character + 1);
-                return { *loc };
-            } else {
-                log::info("[LSP] >>> return TextDocument Definition has no code file location (maybe builtin or path?)");
-                return nullptr;
-            }
+            return nullptr;
+        }
+        // When on a declaration try find references
+        if(auto occurences = find_occurrences_of_identifier(*this, cursor, false)){
+            log::info("[LSP] >>> Found {} occurrences of identifier", occurences->all_occurences.size());
+            if(occurences->all_occurences.empty()) return { occurences->declaration_range };
+            return occurences->all_occurences;
         }
 
-        auto occurences = find_occurrences_of_identifier(*this, *cursor, false);
-        if(!occurences) return {};
-        log::info("[LSP] >>> Found {} occurrences of identifier", occurences->all_occurences.size());
-        return occurences->all_occurences;
+        return nullptr;
     });
 
     message_handler_.add<reqst::TextDocument_References>([this](lsp::ReferenceParams&& params) -> reqst::TextDocument_References::Result {
         log::info("[LSP] <<< TextDocument References {}:{}:{}", params.textDocument.uri.path(), params.position.line + 1, params.position.character + 1);
 
         auto cursor = convert_loc(params.textDocument, params.position);
-        if(!cursor) return {};
-        auto occurences = find_occurrences_of_identifier(*this, *cursor, true);
+        auto occurences = find_occurrences_of_identifier(*this, cursor, true);
         if(!occurences) return {};
         log::info("[LSP] >>> Found {} occurrences of identifier", occurences->all_occurences.size());
         return occurences->all_occurences;
@@ -564,9 +550,7 @@ void Server::setup_events() {
                 params.textDocument.uri.path(), params.position.line + 1, params.position.character + 1);
 
         auto cursor = convert_loc(params.textDocument, params.position);
-        if(!cursor) return {};
-
-        auto occurences = find_occurrences_of_identifier(*this, *cursor, true);
+        auto occurences = find_occurrences_of_identifier(*this, cursor, true);
         if(!occurences) {
             log::info("[LSP] >>> PrepareRename found no symbol at cursor");
             return nullptr;
@@ -586,9 +570,7 @@ void Server::setup_events() {
                  params.textDocument.uri.path(), params.position.line + 1, params.position.character + 1, params.newName);
 
         auto cursor = convert_loc(params.textDocument, params.position);
-        if(!cursor) return {};
-
-        auto occurences = find_occurrences_of_identifier(*this, *cursor, true);
+        auto occurences = find_occurrences_of_identifier(*this, cursor, true);
         if(!occurences) {
             log::info("[LSP] >>> Rename found no symbol at cursor");
             return nullptr;
