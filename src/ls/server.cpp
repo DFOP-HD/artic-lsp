@@ -362,22 +362,9 @@ SemanticToken create_semantic_token(const Loc& loc, const ast::NamedDecl& decl, 
     if (auto t = decl.isa<ast::StaticDecl>()) {
         token.type = (uint32_t) ty::Variable;
         token.modifiers |= flag(md::Static);
-        if(!t->is_mut) 
-            token.modifiers |= flag(md::Readonly);
     } 
-    else if (auto t = decl.isa<ast::LetDecl>()) {
-        if(auto p = t->ptrn->isa<ast::PtrnDecl>()){
-            token.type = (uint32_t) ty::Variable;
-            if(!p->is_mut) 
-                token.modifiers |= flag(md::Readonly);
-        }
-        
-    } 
-    else if (auto t = decl.isa<ast::PtrnDecl>()) {
-        token.type = (uint32_t) ty::Parameter;
-        if(!t->is_mut) 
-            token.modifiers |= flag(md::Readonly);
-    } 
+    else if (decl.isa<ast::LetDecl>())    token.type = (uint32_t) ty::Variable;
+    else if (decl.isa<ast::PtrnDecl>())   token.type = (uint32_t) ty::Parameter; 
     else if (decl.isa<ast::TypeParam>())  token.type = (uint32_t) ty::Type;
     else if (decl.isa<ast::FnDecl>())     token.type = (uint32_t) ty::Function;
     else if (decl.isa<ast::RecordDecl>()) token.type = (uint32_t) ty::Struct;
@@ -387,14 +374,15 @@ SemanticToken create_semantic_token(const Loc& loc, const ast::NamedDecl& decl, 
     else if (decl.isa<ast::ModDecl>())    token.type = (uint32_t) ty::Namespace;
     else if (decl.isa<ast::UseDecl>())    token.type = (uint32_t) ty::Namespace;
 
-    if(is_decl){
-        token.modifiers |= flag(md::Definition);
-        token.modifiers |= flag(md::Declaration);
-    }
+    // if(is_decl){
+    //     token.modifiers |= flag(md::Definition);
+    // }
     
     if(decl.type) {
-        if(decl.type->isa<FnType>()){
+        if(auto fn = decl.type->isa<FnType>()){
             token.type = (uint32_t) ty::Function;
+            if(fn->codom->isa<NoRetType>())
+                token.type = (uint32_t) ty::Keyword; // continuation
         }
     }
     return token;
@@ -542,7 +530,7 @@ void Server::setup_events() {
                 .semanticTokensProvider = lsp::SemanticTokensOptions{
                     .legend = lsp::SemanticTokensLegend{
                         .tokenTypes = {
-                            "type", "class", "enum", "interface", "struct", 
+                            "namespace", "type", "class", "enum", "interface", "struct", 
                             "typeParameter", "parameter", "variable", "property", "enumMember",
                             "event", "function", "method", "macro", "keyword",
                             "modifier", "comment", "string", "number", "regexp", "operator"
