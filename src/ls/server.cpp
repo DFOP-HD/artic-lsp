@@ -5,6 +5,7 @@
 #include "artic/ls/workspace.h"
 #include "artic/log.h"
 #include "artic/ast.h"
+#include "artic/print.h"
 #include "lsp/error.h"
 
 #include <lsp/types.h>
@@ -14,6 +15,7 @@
 #include <fstream>
 #include <string_view>
 #include <cctype>
+#include <sstream>
 
 
 #ifndef ENABLE_JSON
@@ -399,6 +401,9 @@ void Server::setup_events() {
                 .referencesProvider = true,
                 .renameProvider = lsp::RenameOptions {
                     .prepareProvider = true
+                },
+                .inlayHintProvider = lsp::InlayHintOptions {
+                    .resolveProvider = false
                 }
             },
             .serverInfo = lsp::InitializeResultServerInfo {
@@ -600,6 +605,72 @@ void Server::setup_events() {
     // req::TextDocument_Hover
     // req::TextDocument_Implementation
     // req::TextDocument_InlayHint
+    message_handler_.add<reqst::TextDocument_InlayHint>([this](reqst::TextDocument_InlayHint::Params&& params) -> reqst::TextDocument_InlayHint::Result {
+        log::info("[LSP] <<< TextDocument InlayHint {}:{}:{} to {}:{}", 
+                 params.textDocument.uri.path(), 
+                 params.range.start.line + 1, params.range.start.character + 1,
+                 params.range.end.line + 1, params.range.end.character + 1);
+
+        // Request compilation and name map for the file
+        auto* name_map = request_name_map(params.textDocument.uri.path());
+        if (!name_map || !last_compile || !last_compile->compiler) {
+            log::info("[LSP] >>> No compilation result available for inlay hints");
+            return nullptr;
+        }
+
+        // Get the type hints from the type checker
+        auto* type_hints = last_compile->compiler->type_checker.type_hints;
+        if (!type_hints || type_hints->empty()) {
+            log::info("[LSP] >>> No type hints available");
+            return lsp::Array<lsp::InlayHint>{};
+        }
+
+        lsp::Array<lsp::InlayHint> hints;
+        
+        // Convert TypeHint structs to LSP InlayHint objects
+        for (const auto& hint : *type_hints) {
+            // Check if the hint location is within the requested range
+            if (!hint.loc.file || *hint.loc.file != params.textDocument.uri.path()) {
+                continue;
+            }
+
+            lsp::Position hint_pos{
+                static_cast<lsp::uint>(hint.loc.end.row - 1),
+                static_cast<lsp::uint>(hint.loc.end.col - 1)
+            };
+
+            // Check if the hint position is within the requested range
+            if (hint_pos.line < params.range.start.line || 
+                hint_pos.line > params.range.end.line ||
+                (hint_pos.line == params.range.start.line && hint_pos.character < params.range.start.character) ||
+                (hint_pos.line == params.range.end.line && hint_pos.character > params.range.end.character)) {
+                continue;
+            }
+
+            // Format the type name for display
+            std::string type_name = "<unknown>";
+            if (hint.type) {
+                std::ostringstream oss;
+                log::Output output(oss, false);
+                Printer printer(output);
+                hint.type->print(printer);
+                type_name = oss.str();
+            }
+            
+            lsp::InlayHint lsp_hint;
+            lsp_hint.position = hint_pos;
+            lsp_hint.label = ": " + type_name;
+            lsp_hint.kind = lsp::InlayHintKindEnum(lsp::InlayHintKind::Type);
+            lsp_hint.paddingLeft = false;
+            lsp_hint.paddingRight = true;
+            
+            hints.push_back(lsp_hint);
+        }
+
+        log::info("[LSP] >>> Returning {} inlay hints", hints.size());
+        return hints;
+    });
+
     // req::TextDocument_InlineCompletion
     // req::TextDocument_InlineValue
     // req::TextDocument_LinkedEditingRange

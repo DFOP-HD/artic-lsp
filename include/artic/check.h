@@ -5,6 +5,7 @@
 #include <optional>
 
 #include "artic/ast.h"
+#include "artic/loc.h"
 #include "artic/types.h"
 #include "artic/log.h"
 #include "artic/array.h"
@@ -20,6 +21,11 @@ public:
     {}
 
     ls::NameMap* name_map;
+    struct TypeHint{
+        Loc loc;
+        const Type* type;
+    };
+    std::vector<TypeHint>* type_hints = new std::vector<TypeHint>;
     TypeTable& type_table;
 
     /// Performs type checking on a whole program.

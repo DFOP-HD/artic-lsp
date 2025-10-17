@@ -1686,10 +1686,16 @@ const artic::Type* PtrnDecl::check(TypeChecker&, const artic::Type* expected) {
 }
 
 const artic::Type* LetDecl::infer(TypeChecker& checker) {
+    const artic::Type* t;
     if (init)
-        checker.infer(*ptrn, init);
+        t = checker.infer(*ptrn, init);
     else
-        checker.infer(*ptrn);
+        t = checker.infer(*ptrn);
+    if(ptrn->isa<IdPtrn>()) {
+        checker.type_hints->emplace_back(TypeChecker::TypeHint{ptrn->loc, t});
+        log::info("Id pattern with type {} at '{}'", ptrn->loc, *t);
+    }
+
     checker.check_refutability(*ptrn, true);
     return checker.type_table.unit_type();
 }

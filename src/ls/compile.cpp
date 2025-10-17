@@ -68,7 +68,7 @@ std::unique_ptr<CompileResult> CompilerInstance::compile_files(std::span<const w
             log::error("Parsing failed for file {}", file->path);
             if(!include_non_parsed_files) continue;
         } else {
-            log::error("Parsing success for file {}", file->path);
+            // log::info("Parsing success for file {}", file->path);
         }
         program->decls.insert(
             program->decls.end(),
