@@ -440,9 +440,9 @@ void Server::setup_events() {
                 compile_file(path);
         }
     });
-
-    message_handler_.add<notif::TextDocument_DidChange>([this](notif::TextDocument_DidChange::Params&& params) {
-        log::info("[LSP] <<< TextDocument DidChange");
+    // message_handler_.add<notif::TextDocument_DidChange>([this](notif::TextDocument_DidChange::Params&& params) {
+    message_handler_.add<notif::TextDocument_DidSave>([this](notif::TextDocument_DidSave::Params&& params) {
+        log::info("[LSP] <<< TextDocument DidSave");
         
         // Clear the last compilation result to invalidate stale inlay hints
         // This forces a recompilation when inlay hints are next requested
