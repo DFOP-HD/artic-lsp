@@ -5,7 +5,6 @@
 #include "artic/bind.h"
 #include "artic/check.h"
 #include "artic/summoner.h"
-#include "lsp/error.h"
 #include <iostream>
 
 namespace {

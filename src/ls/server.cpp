@@ -106,7 +106,7 @@ void Server::compile_files(std::span<const workspace::File*> files){
 
     // Send Diagnostics for the provided files only
     std::unordered_map<std::string, std::vector<lsp::Diagnostic>> diagnostics_by_file;
-    for (const auto& diag : compile->log.diagnostics) {
+    for (const auto& diag : compile->diagnostics) {
         diagnostics_by_file[*diag.loc.file].push_back(convert_diagnostic(diag));
     }
     for (const auto* file : files) {

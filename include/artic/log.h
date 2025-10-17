@@ -185,6 +185,8 @@ void info(const char* fmt, Args&&... args) {
 
 } // namespace log
 
+namespace ls {
+
 struct Diagnostic {
     enum Severity { Error, Warning, Info, Hint };
 
@@ -210,11 +212,13 @@ struct Diagnostic {
     Severity severity;
 };
 
+} // namespace ls
+
 class Locator;
 
 struct Log {
-    Log(log::Output& out, Locator* locator = nullptr, size_t errors = 0, size_t warns = 0)
-        : out(out), locator(locator), errors(errors), warns(warns)
+    Log(log::Output& out, Locator* locator = nullptr, size_t errors = 0, size_t warns = 0, std::vector<ls::Diagnostic>* diagnostics = nullptr)
+        : out(out), locator(locator), errors(errors), warns(warns), diagnostics(diagnostics)
     {}
 
     bool is_full() const {
@@ -228,10 +232,8 @@ struct Log {
     size_t max_errors = 0;
     size_t errors;
     size_t warns;
-    std::vector<Diagnostic> diagnostics;
+    std::vector<ls::Diagnostic>* diagnostics;
 };
-
-static inline bool is_lsp = true; // TODO
 
 /// Base class for objects that have a log attached to them.
 struct Logger {
@@ -248,8 +250,8 @@ struct Logger {
     /// Report an error at the given location in a source file.
     template <typename... Args>
     void error(const Loc& loc, const char* fmt, Args&&... args) {
-        if(is_lsp) 
-            log.diagnostics.push_back(Diagnostic::format(Diagnostic::Error, loc, fmt, std::forward<Args>(args)...));
+        if(log.diagnostics) 
+            log.diagnostics->push_back(ls::Diagnostic::format(ls::Diagnostic::Error, loc, fmt, std::forward<Args>(args)...));
 
         if (!log.is_full()) {
             error(fmt, std::forward<Args>(args)...);
@@ -266,8 +268,8 @@ struct Logger {
             return;
         }
 
-        if (is_lsp) 
-            log.diagnostics.push_back(Diagnostic::format(Diagnostic::Warning, loc, fmt, std::forward<Args>(args)...));
+        if (log.diagnostics) 
+            log.diagnostics->push_back(ls::Diagnostic::format(ls::Diagnostic::Warning, loc, fmt, std::forward<Args>(args)...));
 
         if (!log.is_full()) {
             warn(fmt, std::forward<Args>(args)...);
@@ -279,8 +281,8 @@ struct Logger {
     /// Display a note corresponding to a specific location in a source file.
     template <typename... Args>
     void note(const Loc& loc, const char* fmt, Args&&... args) {
-        if(is_lsp) 
-            log.diagnostics.push_back(Diagnostic::format(Diagnostic::Info, loc, fmt, std::forward<Args>(args)...));
+        if(log.diagnostics) 
+            log.diagnostics->push_back(ls::Diagnostic::format(ls::Diagnostic::Info, loc, fmt, std::forward<Args>(args)...));
 
         if (!log.is_full()) {
             note(fmt, std::forward<Args>(args)...);
