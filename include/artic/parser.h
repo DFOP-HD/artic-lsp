@@ -14,6 +14,30 @@
 
 namespace artic {
 
+template<typename T> concept node = std::derived_from<T, ast::Node>;
+
+template <node T, node E, node B>
+class expected {
+public:
+    expected() = default;
+    expected(Ptr<T> value) : data_(value) {}
+    expected(Ptr<B> base) : data_(base) {}
+    expected(Ptr<E> err) : data_(err) {}
+
+    Ptr<T> value() { return data_->template as<T>(); }
+    Ptr<B> base() { return data_; }
+    bool has_value() const { return data_->template isa<T>(); }
+    bool has_error() const { return !has_value(); }
+    operator bool() const { return has_value(); }
+    operator Ptr<B>() const { return base(); }
+private:
+    Ptr<B> data_;
+};
+
+template<typename Ok>
+using ResDecl = expected<Ok, ast::ErrorDecl, ast::Decl>;
+
+
 /// Generates an AST from a stream of tokens.
 class Parser : public Logger {
 public:

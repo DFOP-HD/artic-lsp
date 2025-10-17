@@ -48,10 +48,6 @@ Ptr<ast::Decl> Parser::parse_decl(bool is_top_level) {
         case Token::Use:      decl = parse_use_decl();      break;
         default:              decl = parse_error_decl();    break;
     }
-    if(!decl) {
-        Tracker tracker(this);
-        decl = _arena.make_ptr<ast::ErrorDecl>(tracker());
-    }
     decl->attrs = std::move(attrs);
     decl->is_top_level = is_top_level;
     return decl;
@@ -627,7 +623,7 @@ Ptr<ast::BlockExpr> Parser::parse_block_expr() {
             case Token::Summon:
             case Token::Fn:
                 if (!last_semi && !stmts.empty() && stmts.back()->needs_semicolon())
-                    error(ahead().loc(), "expected ';', but got '{}'", ahead().string());
+                    error(prev_, "expected ';', but got '{}'", ahead().string());
                 last_semi = false;
                 stmts.emplace_back(parse_stmt());
                 continue;
