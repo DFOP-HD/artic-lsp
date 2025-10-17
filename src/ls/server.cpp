@@ -76,14 +76,13 @@ void Server::compile_files(std::span<const workspace::File*> files){
 
     log::info("Compiling {} file(s)", files.size());
 
-    auto compiler = std::make_shared<compiler::CompilerInstance>();
-    last_compile = compiler->compile_files(files);
-    last_compile->compiler = compiler;
+    compile.emplace();
+    compile->compile_files(files);
 
     const bool print_compile_log = false;
-    if(print_compile_log) compiler->log.print_summary();
+    if(print_compile_log) compile->log.print_summary();
 
-    if(last_compile->compiler->log.errors == 0){
+    if(compile->log.errors == 0){
         log::info("Compile success");
     } else {
         log::info("Compile failed");
@@ -107,7 +106,7 @@ void Server::compile_files(std::span<const workspace::File*> files){
 
     // Send Diagnostics for the provided files only
     std::unordered_map<std::string, std::vector<lsp::Diagnostic>> diagnostics_by_file;
-    for (const auto& diag : compiler->log.diagnostics) {
+    for (const auto& diag : compile->log.diagnostics) {
         diagnostics_by_file[*diag.loc.file].push_back(convert_diagnostic(diag));
     }
     for (const auto* file : files) {
@@ -143,9 +142,9 @@ void Server::compile_file(const std::filesystem::path& file){
         compile_files(files);
 
         // keep the temporary file alive for diagnostics
-        if(last_compile) last_compile->temporary_files.push_back(std::move(temp_file));
+        if(compile) compile->temporary_files.push_back(std::move(temp_file));
     }
-    if(last_compile) last_compile->active_file = file;
+    if(compile) compile->active_file = file;
 }
 
 // Server Reload Workspace ----------------------------------------------------------------------
@@ -156,8 +155,8 @@ void Server::reload_workspace(const std::string& active_file) {
     workspace_->reload(log);
     // This is somehow blocking. TODO investigate
     publish_config_diagnostics(log);
-    if(last_compile){
-        auto file = last_compile->active_file;
+    if(compile){
+        auto file = compile->active_file;
         compile_file(file);
     }
 }
@@ -314,9 +313,9 @@ Loc convert_loc(const lsp::TextDocumentIdentifier& file, const lsp::Position& po
 
 void Server::ensure_compile(std::string_view file_view) {
     std::string file(file_view);
-    bool already_compiled = last_compile && last_compile->compiler->locator.data(file);
+    bool already_compiled = compile && compile->locator.data(file);
     if (!already_compiled) compile_file(file);
-    if (!last_compile) throw lsp::RequestError(lsp::Error::InternalError, "Did not get a compilation result");
+    if (!compile) throw lsp::RequestError(lsp::Error::InternalError, "Did not get a compilation result");
 }
 
 struct IndentifierOccurences{
@@ -329,7 +328,7 @@ struct IndentifierOccurences{
 
 std::optional<IndentifierOccurences> find_occurrences_of_identifier(Server& server, const Loc& cursor, bool include_declaration) {
     server.ensure_compile(*cursor.file);
-    auto& name_map = server.last_compile->compiler->name_map;
+    auto& name_map = server.compile->name_map;
 
     Loc cursor_range;
     const ast::NamedDecl* target_decl = name_map.find_decl_at(cursor);
@@ -436,7 +435,7 @@ void Server::setup_events() {
             // skip compilation on open when it was already compiled
             // we need to do this as go to definition shortly opens the text document in vscode 
             // and we don't want to invalidate the definition while looking it up
-            bool already_compiled = last_compile && last_compile->compiler->locator.data(path);
+            bool already_compiled = compile && compile->locator.data(path);
             if(!already_compiled)
                 compile_file(path);
         }
@@ -447,8 +446,8 @@ void Server::setup_events() {
         
         // Clear the last compilation result to invalidate stale inlay hints
         // This forces a recompilation when inlay hints are next requested
-        if (last_compile) {
-            last_compile.reset();
+        if (compile) {
+            compile.reset();
         }
         
         // Send inlay hint refresh request to clear stale hints immediately
@@ -532,7 +531,7 @@ void Server::setup_events() {
         auto cursor = convert_loc(pos.textDocument, pos.position);
 
         ensure_compile(pos.textDocument.uri.path());
-        auto& name_map = last_compile->compiler->name_map;
+        auto& name_map = compile->name_map;
         
         // When on a reference try find declaration
         if(auto ref = name_map.find_ref_at(cursor)) {
@@ -629,21 +628,13 @@ void Server::setup_events() {
                  params.range.start.line + 1, params.range.start.character + 1,
                  params.range.end.line + 1, params.range.end.character + 1);
 
-        // Request compilation and name map for the file
         ensure_compile(params.textDocument.uri.path());
-        auto& name_map = last_compile->compiler->name_map;
-
-        // Get the type hints from the type checker
-        auto* type_hints = last_compile->compiler->type_checker.type_hints;
-        if (!type_hints || type_hints->empty()) {
-            log::info("[LSP] >>> No type hints available");
-            return lsp::Array<lsp::InlayHint>{};
-        }
+        auto& name_map = compile->name_map;
 
         lsp::Array<lsp::InlayHint> hints;
         
         // Convert TypeHint structs to LSP InlayHint objects
-        for (const auto& hint : *type_hints) {
+        for (const auto& hint : compile->type_hints) {
             // Check if the hint location is within the requested range
             if (!hint.loc.file || *hint.loc.file != params.textDocument.uri.path()) {
                 continue;

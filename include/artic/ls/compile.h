@@ -11,12 +11,10 @@
 #include <memory>
 #include <span>
 
-namespace artic::ls::compiler {
+namespace artic::ls{
 
-struct CompileResult;
-
-struct CompilerInstance {
-    CompilerInstance()
+struct Compiler {
+    Compiler()
         : arena(), type_table(), locator()
         , log(log::err, &locator)
         , name_binder(log, &name_map)
@@ -29,11 +27,19 @@ struct CompilerInstance {
             name_binder.warn_on_shadowing = true;
     }
 
-    std::unique_ptr<CompileResult> compile_files(std::span<const workspace::File*> files);
+    void compile_files(std::span<const workspace::File*> files);
 
+    // Output -----
     NameMap name_map;
     TypeHints type_hints;
+    Ptr<ast::ModDecl> program;
+    
+    // Input -----
+    std::vector<std::unique_ptr<workspace::File>> temporary_files; // used to keep temporary file alive after compilation
+    std::filesystem::path active_file; // used for recompilation when the configuration changes. Could be done in a cleaner way
 
+// private:
+    // Compiler Internals
     Arena arena;
     TypeTable type_table;
     Locator locator;
@@ -44,20 +50,6 @@ struct CompilerInstance {
 
     bool warns_as_errors = false;
     bool enable_all_warns = true;
-};
-
-struct CompileResult {
-    // Output -----
-    Ptr<ast::ModDecl> program;
-    
-    // Input -----
-    std::shared_ptr<CompilerInstance> compiler; // used to keep compiler alive after compilation TODO make unique_ptr
-    std::vector<std::unique_ptr<workspace::File>> temporary_files; // used to keep temporary file alive after compilation
-    std::filesystem::path active_file; // used for recompilation when the configuration changes. Could be done in a cleaner way
-
-    explicit CompileResult(Ptr<ast::ModDecl> program)
-        : program(program.get())
-    {}
 };
 
 } // namespace artic::ls::compiler

@@ -5,6 +5,7 @@
 #include "artic/bind.h"
 #include "artic/check.h"
 #include "artic/summoner.h"
+#include "lsp/error.h"
 #include <iostream>
 
 namespace {
@@ -40,10 +41,10 @@ struct MemBuf : public std::streambuf {
 
 } // anonymous namespace
 
-namespace artic::ls::compiler {
+namespace artic::ls {
 
-std::unique_ptr<CompileResult> CompilerInstance::compile_files(std::span<const workspace::File*> files) {
-    auto program = arena.make_ptr<ast::ModDecl>();
+void Compiler::compile_files(std::span<const workspace::File*> files) {
+    program = arena.make_ptr<ast::ModDecl>();
     constexpr bool include_non_parsed_files = true;
 
     for (auto& file : files){
@@ -51,7 +52,7 @@ std::unique_ptr<CompileResult> CompilerInstance::compile_files(std::span<const w
         auto prev_errors = log.errors;
         if (!file->text) {
             log::error("cannot open file '{}'", file->path);
-            return std::make_unique<CompileResult>(nullptr);
+            continue;
         }
         if (log.locator)
             log.locator->register_file(file->path, file->text.value());
@@ -86,14 +87,12 @@ std::unique_ptr<CompileResult> CompilerInstance::compile_files(std::span<const w
     Summoner summoner(log, arena);
 
     if (!name_binder.run(*program))
-        ;// return std::make_unique<CompileResult>(std::move(program));
+        ;// return;
     if(!type_checker.run(*program))
-        return std::make_unique<CompileResult>(std::move(program));
+        return;
     if(!summoner.run(*program))
-        return std::make_unique<CompileResult>(std::move(program));
-
-    return std::make_unique<CompileResult>(std::move(program));
+        return;
 }
 
 
-} // namespace artic::ls::compiler
+} // namespace artic::ls
