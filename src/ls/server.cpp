@@ -10,6 +10,7 @@
 #include "artic/types.h"
 #include "lsp/error.h"
 
+#include <chrono>
 #include <limits>
 #include <lsp/types.h>
 #include <lsp/io/standardio.h>
@@ -31,133 +32,6 @@ namespace reqst = lsp::requests;
 namespace notif = lsp::notifications;
 
 namespace artic::ls {
-
-// Semantic Token Helper Functions
-namespace tokens {
-
-struct SemanticToken {
-    uint32_t line;
-    uint32_t start; 
-    uint32_t length;
-    uint32_t type;
-    uint32_t modifiers;
-};
-
-SemanticToken create_semantic_token(const Loc& loc, const ast::NamedDecl& decl, bool is_decl) {
-    SemanticToken token;
-    token.line = loc.begin.row - 1;
-    token.start = loc.begin.col - 1;
-    token.length = loc.end.col - loc.begin.col;
-    using ty = lsp::SemanticTokenTypes;
-    using md = lsp::SemanticTokenModifiers;
-
-    auto flag = [](md mod) -> uint32_t  {
-        uint32_t val = static_cast<uint32_t>(mod);
-        if(val == 0) return 0u;
-        else return 1u << (val-1);
-    };
-
-    if (auto t = decl.isa<ast::StaticDecl>()) {
-        token.type = (uint32_t) ty::Variable;
-        token.modifiers |= flag(md::Static);
-        if(!t->is_mut) 
-            token.modifiers |= flag(md::Readonly);
-    } 
-    else if (auto t = decl.isa<ast::LetDecl>()) {
-        if(auto p = t->ptrn->isa<ast::PtrnDecl>()){
-            token.type = (uint32_t) ty::Variable;
-            if(!p->is_mut) 
-                token.modifiers |= flag(md::Readonly);
-        }
-        
-    } 
-    else if (auto t = decl.isa<ast::PtrnDecl>()) {
-        token.type = (uint32_t) ty::Parameter;
-        if(!t->is_mut) 
-            token.modifiers |= flag(md::Readonly);
-    } 
-    else if (decl.isa<ast::TypeParam>())  token.type = (uint32_t) ty::Type;
-    else if (decl.isa<ast::FnDecl>())     token.type = (uint32_t) ty::Function;
-    else if (decl.isa<ast::RecordDecl>()) token.type = (uint32_t) ty::Struct;
-    else if (decl.isa<ast::EnumDecl>())   token.type = (uint32_t) ty::Enum;
-    else if (decl.isa<ast::TypeDecl>())   token.type = (uint32_t) ty::Type;
-    else if (decl.isa<ast::FieldDecl>())  token.type = (uint32_t) ty::Property;
-    else if (decl.isa<ast::ModDecl>())    token.type = (uint32_t) ty::Namespace;
-    else if (decl.isa<ast::UseDecl>())    token.type = (uint32_t) ty::Namespace;
-
-    if(is_decl){
-        token.modifiers |= flag(md::Definition);
-        token.modifiers |= flag(md::Declaration);
-    }
-    
-    if(decl.type) {
-        if(decl.type->isa<FnType>()){
-            token.type = (uint32_t) ty::Function;
-        }
-    }
-    return token;
-}
-
-// Collect semantic tokens from the NameMap by iterating over declarations and references
-lsp::SemanticTokens collect(
-    const ls::NameMap& name_map, 
-    const std::string& file, 
-    int start_row = 0, 
-    int end_row = std::numeric_limits<int>::max()
-) {
-    std::vector<SemanticToken> tokens;
-    // Check if we have entries for this file
-    if (!name_map.files.contains(file)) return {};
-    
-    auto& names = name_map.files.at(file);
-    
-    // Collect tokens from references (this is where we want semantic highlighting)
-    for (const auto& [ref, decl] : names.declaration_of) {
-        auto& loc = name_map.get_identifier(ref).loc;
-        if(loc.begin.row >= start_row && loc.end.row <= end_row)
-            tokens.push_back(create_semantic_token(loc, *decl, false));
-    }
-    
-    // Collect tokens from declarations
-    for (const auto& [decl, refs] : names.references_of) {
-        auto& loc = decl->id.loc;
-        if(loc.begin.row >= start_row && loc.end.row <= end_row)
-            tokens.push_back(create_semantic_token(loc, *decl, true));
-    }
-
-    std::sort(tokens.begin(), tokens.end(), [](const tokens::SemanticToken& a, const tokens::SemanticToken& b) {
-        if (a.line != b.line) return a.line < b.line;
-        return a.start < b.start;
-    });
-
-    // Encode
-    std::vector<uint32_t> data;
-    data.reserve(tokens.size() * sizeof(SemanticToken) / sizeof(uint32_t));
-    uint32_t prev_line = 0;
-    uint32_t prev_start = 0;
-    
-    for (const auto& token : tokens) {
-        // Delta-encode the tokens as required by LSP spec
-        uint32_t delta_line = token.line - prev_line;
-        uint32_t delta_start = (delta_line == 0) ? token.start - prev_start : token.start;
-        
-        data.push_back(delta_line);
-        data.push_back(delta_start);
-        data.push_back(token.length);
-        data.push_back(token.type);
-        data.push_back(token.modifiers);
-        
-        prev_line = token.line;
-        prev_start = token.start;
-    }
-    
-    return lsp::SemanticTokens{
-        .data = data
-    };
-}
-
-}
-
 
 // Server ---------------------------------------------------------------------
 
@@ -201,6 +75,7 @@ Server::FileType Server::get_file_type(const std::filesystem::path& file) {
 // Server Compilation / Diagnostics ----------------------------------------------------------------------
 
 void Server::compile_files(std::span<const workspace::File*> files){
+    Timer _("Compile Files");
     if (files.empty()) {
         log::info("no input files (compile_files)");
         return;
@@ -279,9 +154,17 @@ void Server::compile_file(const std::filesystem::path& file){
     if(compile) compile->active_file = file;
 }
 
+void Server::ensure_compile(std::string_view file_view) {
+    std::string file(file_view);
+    bool already_compiled = compile && compile->locator.data(file);
+    if (!already_compiled) compile_file(file);
+    if (!compile) throw lsp::RequestError(lsp::Error::InternalError, "Did not get a compilation result");
+}
+
 // Server Reload Workspace ----------------------------------------------------------------------
 
 void Server::reload_workspace(const std::string& active_file) {
+    Timer _("Reload Workspace");
     log::info("Reloading workspace configuration");
     workspace::config::ConfigLog log;
     workspace_->reload(log);
@@ -451,11 +334,130 @@ Loc convert_loc(const lsp::TextDocumentIdentifier& file, const lsp::Range& pos) 
     );
 }
 
-void Server::ensure_compile(std::string_view file_view) {
-    std::string file(file_view);
-    bool already_compiled = compile && compile->locator.data(file);
-    if (!already_compiled) compile_file(file);
-    if (!compile) throw lsp::RequestError(lsp::Error::InternalError, "Did not get a compilation result");
+// Semantic Token Helper Functions
+namespace tokens {
+
+struct SemanticToken {
+    uint32_t line;
+    uint32_t start; 
+    uint32_t length;
+    uint32_t type;
+    uint32_t modifiers;
+};
+
+SemanticToken create_semantic_token(const Loc& loc, const ast::NamedDecl& decl, bool is_decl) {
+    SemanticToken token;
+    token.line = loc.begin.row - 1;
+    token.start = loc.begin.col - 1;
+    token.length = loc.end.col - loc.begin.col;
+    using ty = lsp::SemanticTokenTypes;
+    using md = lsp::SemanticTokenModifiers;
+
+    auto flag = [](md mod) -> uint32_t  {
+        uint32_t val = static_cast<uint32_t>(mod);
+        if(val == 0) return 0u;
+        else return 1u << (val-1);
+    };
+
+    if (auto t = decl.isa<ast::StaticDecl>()) {
+        token.type = (uint32_t) ty::Variable;
+        token.modifiers |= flag(md::Static);
+        if(!t->is_mut) 
+            token.modifiers |= flag(md::Readonly);
+    } 
+    else if (auto t = decl.isa<ast::LetDecl>()) {
+        if(auto p = t->ptrn->isa<ast::PtrnDecl>()){
+            token.type = (uint32_t) ty::Variable;
+            if(!p->is_mut) 
+                token.modifiers |= flag(md::Readonly);
+        }
+        
+    } 
+    else if (auto t = decl.isa<ast::PtrnDecl>()) {
+        token.type = (uint32_t) ty::Parameter;
+        if(!t->is_mut) 
+            token.modifiers |= flag(md::Readonly);
+    } 
+    else if (decl.isa<ast::TypeParam>())  token.type = (uint32_t) ty::Type;
+    else if (decl.isa<ast::FnDecl>())     token.type = (uint32_t) ty::Function;
+    else if (decl.isa<ast::RecordDecl>()) token.type = (uint32_t) ty::Struct;
+    else if (decl.isa<ast::EnumDecl>())   token.type = (uint32_t) ty::Enum;
+    else if (decl.isa<ast::TypeDecl>())   token.type = (uint32_t) ty::Type;
+    else if (decl.isa<ast::FieldDecl>())  token.type = (uint32_t) ty::Property;
+    else if (decl.isa<ast::ModDecl>())    token.type = (uint32_t) ty::Namespace;
+    else if (decl.isa<ast::UseDecl>())    token.type = (uint32_t) ty::Namespace;
+
+    if(is_decl){
+        token.modifiers |= flag(md::Definition);
+        token.modifiers |= flag(md::Declaration);
+    }
+    
+    if(decl.type) {
+        if(decl.type->isa<FnType>()){
+            token.type = (uint32_t) ty::Function;
+        }
+    }
+    return token;
+}
+
+// Collect semantic tokens from the NameMap by iterating over declarations and references
+lsp::SemanticTokens collect(
+    const ls::NameMap& name_map, 
+    const std::string& file, 
+    int start_row = 0, 
+    int end_row = std::numeric_limits<int>::max()
+) {
+    std::vector<SemanticToken> tokens;
+    // Check if we have entries for this file
+    if (!name_map.files.contains(file)) return {};
+    
+    auto& names = name_map.files.at(file);
+    
+    // Collect tokens from references (this is where we want semantic highlighting)
+    for (const auto& [ref, decl] : names.declaration_of) {
+        auto& loc = name_map.get_identifier(ref).loc;
+        if(loc.begin.row >= start_row && loc.end.row <= end_row)
+            tokens.push_back(create_semantic_token(loc, *decl, false));
+    }
+    
+    // Collect tokens from declarations
+    for (const auto& [decl, refs] : names.references_of) {
+        auto& loc = decl->id.loc;
+        if(loc.begin.row >= start_row && loc.end.row <= end_row)
+            tokens.push_back(create_semantic_token(loc, *decl, true));
+    }
+
+    std::sort(tokens.begin(), tokens.end(), [](const tokens::SemanticToken& a, const tokens::SemanticToken& b) {
+        if (a.line != b.line) return a.line < b.line;
+        return a.start < b.start;
+    });
+
+    // Encode
+    std::vector<uint32_t> data;
+    data.reserve(tokens.size() * sizeof(SemanticToken) / sizeof(uint32_t));
+    uint32_t prev_line = 0;
+    uint32_t prev_start = 0;
+    
+    for (const auto& token : tokens) {
+        // Delta-encode the tokens as required by LSP spec
+        uint32_t delta_line = token.line - prev_line;
+        uint32_t delta_start = (delta_line == 0) ? token.start - prev_start : token.start;
+        
+        data.push_back(delta_line);
+        data.push_back(delta_start);
+        data.push_back(token.length);
+        data.push_back(token.type);
+        data.push_back(token.modifiers);
+        
+        prev_line = token.line;
+        prev_start = token.start;
+    }
+    
+    return lsp::SemanticTokens{
+        .data = data
+    };
+}
+
 }
 
 struct IndentifierOccurences{
@@ -509,6 +511,7 @@ std::optional<IndentifierOccurences> find_occurrences_of_identifier(Server& serv
 void Server::setup_events() {
     // Initilalize ----------------------------------------------------------------------
     message_handler_.add<reqst::Initialize>([this](reqst::Initialize::Params&& params) -> reqst::Initialize::Result {
+        Timer _("Initialize");
         log::info( "[LSP] <<< Initialize");
         
         InitOptions init_data = parse_initialize_options(params, *this);
@@ -579,9 +582,6 @@ void Server::setup_events() {
     });
 
     // Textdocument ----------------------------------------------------------------------
-    // message_handler_.add<notif::TextDocument_DidSave>([](notif::TextDocument_DidSave::Params&& params) {
-    //     log::info("[LSP] <<< TextDocument DidSave");
-    // });
     message_handler_.add<notif::TextDocument_DidClose>([](notif::TextDocument_DidClose::Params&& params) {
         log::info("[LSP] <<< TextDocument DidClose");
     });
@@ -629,11 +629,7 @@ void Server::setup_events() {
             return;
         }
         auto file = params.textDocument.uri.path();
-        const auto& files = workspace_->projects_.tracked_files;
-        auto it = files.find(file);
-        if(it != files.end()) {
-            it->second->read();
-        }
+        workspace_->mark_file_dirty(file);
         compile_file(file);
     });
 
@@ -685,6 +681,7 @@ void Server::setup_events() {
     // req::TextDocument_Declaration
     
     message_handler_.add<reqst::TextDocument_Definition>([this](lsp::TextDocumentPositionParams&& pos) -> reqst::TextDocument_Definition::Result {
+        Timer _("TextDocument_Definition");
         log::info("[LSP] <<< TextDocument Definition {}:{}:{}", pos.textDocument.uri.path(), pos.position.line + 1, pos.position.character + 1);
 
         auto cursor = convert_loc(pos.textDocument, pos.position);
@@ -712,6 +709,7 @@ void Server::setup_events() {
     });
 
     message_handler_.add<reqst::TextDocument_References>([this](lsp::ReferenceParams&& params) -> reqst::TextDocument_References::Result {
+        Timer _("TextDocument_References");
         log::info("[LSP] <<< TextDocument References {}:{}:{}", params.textDocument.uri.path(), params.position.line + 1, params.position.character + 1);
 
         auto cursor = convert_loc(params.textDocument, params.position);
@@ -722,6 +720,7 @@ void Server::setup_events() {
     });
 
     message_handler_.add<reqst::TextDocument_PrepareRename>([this](lsp::TextDocumentPositionParams&& params) -> reqst::TextDocument_PrepareRename::Result {
+        Timer _("TextDocument_PrepareRename");
         log::info("[LSP] <<< TextDocument PrepareRename {}:{}:{}", 
                 params.textDocument.uri.path(), params.position.line + 1, params.position.character + 1);
 
@@ -742,6 +741,7 @@ void Server::setup_events() {
     });
 
     message_handler_.add<reqst::TextDocument_Rename>([this](lsp::RenameParams&& params) -> reqst::TextDocument_Rename::Result {
+        Timer _("TextDocument_Rename");
         log::info("[LSP] <<< TextDocument Rename {}:{}:{} -> '{}'", 
                  params.textDocument.uri.path(), params.position.line + 1, params.position.character + 1, params.newName);
 
@@ -782,6 +782,7 @@ void Server::setup_events() {
     // req::TextDocument_Implementation
     // req::TextDocument_InlayHint
     message_handler_.add<reqst::TextDocument_InlayHint>([this](reqst::TextDocument_InlayHint::Params&& params) -> reqst::TextDocument_InlayHint::Result {
+        Timer _("TextDocument_InlayHint");
         std::string file(params.textDocument.uri.path());
         log::info("[LSP] <<< TextDocument InlayHint {}:{}:{} to {}:{}", 
                  file, 
@@ -793,7 +794,7 @@ void Server::setup_events() {
         lsp::Array<lsp::InlayHint> hints;
         if(!compile->name_map.files.contains(file))
             return hints;
-        
+
         // Convert TypeHint structs to LSP InlayHint objects
         for (const auto* hint : compile->name_map.files.at(file).with_type_hint) {
             auto& loc = hint->loc;
@@ -842,6 +843,7 @@ void Server::setup_events() {
 
     // Semantic Tokens ----------------------------------------------------------------------
     message_handler_.add<reqst::TextDocument_SemanticTokens_Full>([this](lsp::SemanticTokensParams&& params) -> reqst::TextDocument_SemanticTokens_Full::Result {
+        Timer _("TextDocument_SemanticTokens_Full");
         std::string file(params.textDocument.uri.path());
         log::info("[LSP] <<< TextDocument SemanticTokens_Full {}", file);
         
@@ -853,6 +855,7 @@ void Server::setup_events() {
     });
 
     message_handler_.add<reqst::TextDocument_SemanticTokens_Range>([this](lsp::SemanticTokensRangeParams&& params) -> reqst::TextDocument_SemanticTokens_Range::Result {
+        Timer _("TextDocument_SemanticTokens_Range");
         std::string file(params.textDocument.uri.path());
         log::info("[LSP] <<< TextDocument SemanticTokens_Range {}:{}:{} to {}:{}", 
                  file,

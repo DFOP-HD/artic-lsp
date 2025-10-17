@@ -15,7 +15,6 @@ namespace config { struct ConfigLog; }
 struct File {
     std::filesystem::path path;
     mutable std::optional<std::string> text; // TODO make non-mutable
-
     void read() const;
 
     explicit File(std::filesystem::path path) 
@@ -55,6 +54,7 @@ public:
     void reload(config::ConfigLog& log);
     std::optional<std::shared_ptr<Project>> project_for_file(const std::filesystem::path& file) const;
     std::shared_ptr<Project> default_project() const { return projects_.default_project; }
+    void mark_file_dirty(const std::filesystem::path& file);
     
     ProjectRegistry projects_;
     std::optional<Project::Identifier> active_project;
