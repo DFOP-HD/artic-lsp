@@ -741,7 +741,7 @@ const artic::Type* Path::infer(TypeChecker& checker, bool value_expected, Ptr<Ex
                 return checker.type_expected(elem.loc, type, "module or enum");
 
             if(checker.name_map && name_map_decl) {
-                checker.name_map->insert(name_map_decl, &elems[i+1].id);
+                checker.name_map->insert(name_map_decl, &elems[i+1]);
             }
         }
     }

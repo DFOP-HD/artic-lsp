@@ -80,18 +80,20 @@ std::optional<Ref> NameMap::find_ref_at(const Loc& loc) const {
 const ast::Identifier& NameMap::get_identifier(Ref ref) const {
     return std::visit([](auto&& ref) -> const ast::Identifier& {
         using T = std::decay_t<decltype(ref)>;
+        if constexpr (std::is_same_v<T, const ast::Identifier*>) 
+            return *ref;
         if constexpr (std::is_same_v<T, const ast::Path*>) 
             return ref->elems.front().id;
+        else if constexpr (std::is_same_v<T, const ast::Path::Elem*>) 
+            return ref->id;
         else if constexpr (std::is_same_v<T, const ast::ProjExpr*>) {
             if (std::holds_alternative<ast::Identifier>(ref->field)) 
                 return std::get<ast::Identifier>(ref->field);
             else
                 assert(false && "tuple indices are not supported for go-to-definition");
-        } 
-        else if constexpr (std::is_same_v<T, const ast::Identifier*>) 
-            return *ref;
+        }
         assert(false && "unhandled variant type");
-        return *(const ast::Identifier*)nullptr;
+        exit(1);
     }, ref);
 }
 

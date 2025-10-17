@@ -19,8 +19,10 @@ namespace ls {
 /// Stores information related to LSP go-to-definiton & find-references
 class NameMap {
 public:
-    using Ref = std::variant<const ast::Path*, const ast::ProjExpr*, const ast::Identifier*>;
     using Decl = const ast::NamedDecl*;
+    using Ref = std::variant<const ast::Identifier* /* used for ast::FieldExpr and ast::FieldPtrn */, 
+                             const ast::Path*, const ast::Path::Elem*, 
+                             const ast::ProjExpr*>;
 
     void insert(Decl decl, Ref ref);
     void insert(Decl def);
