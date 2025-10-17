@@ -81,8 +81,10 @@ Ptr<ast::FnDecl> Parser::parse_fn_decl() {
     Ptr<ast::Ptrn> param;
     if (ahead().tag() == Token::LParen)
         param = parse_tuple_ptrn(true, true);
-    else
+    else {
         error(ahead().loc(), "parameter list expected in function definition");
+        param = parse_error_ptrn();
+    }
 
     Ptr<ast::Type> ret_type;
     if (accept(Token::Arrow)) {
@@ -107,6 +109,7 @@ Ptr<ast::FnDecl> Parser::parse_fn_decl() {
     }
 
     auto fn = _arena.make_ptr<ast::FnExpr>(tracker(), std::move(filter), std::move(param), std::move(ret_type), std::move(body));
+    // fn->dump();
     return _arena.make_ptr<ast::FnDecl>(tracker(), std::move(id), std::move(fn), std::move(type_params));
 }
 
@@ -623,7 +626,7 @@ Ptr<ast::BlockExpr> Parser::parse_block_expr() {
             case Token::Summon:
             case Token::Fn:
                 if (!last_semi && !stmts.empty() && stmts.back()->needs_semicolon())
-                    error(prev_, "expected ';', but got '{}'", ahead().string());
+                    error(ahead().loc(), "expected ';', but got '{}'", ahead().string());
                 last_semi = false;
                 stmts.emplace_back(parse_stmt());
                 continue;
