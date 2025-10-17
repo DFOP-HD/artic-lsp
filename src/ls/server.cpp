@@ -312,14 +312,13 @@ Loc convert_loc(const lsp::TextDocumentIdentifier& file, const lsp::Position& po
     );
 }
 
-const NameMap& Server::request_name_map(std::string_view file_view) {
+void Server::ensure_compile(std::string_view file_view) {
     std::string file(file_view);
     bool already_compiled = last_compile && last_compile->compiler->locator.data(file);
     if (!already_compiled) compile_file(file);
     if (!last_compile) throw lsp::RequestError(lsp::Error::InternalError, "Did not get a compilation result");
-
-    return last_compile->compiler->name_map;
 }
+
 struct IndentifierOccurences{
     std::string name;
     lsp::Location cursor_range;
@@ -329,7 +328,8 @@ struct IndentifierOccurences{
 };
 
 std::optional<IndentifierOccurences> find_occurrences_of_identifier(Server& server, const Loc& cursor, bool include_declaration) {
-    auto& name_map = server.request_name_map(*cursor.file);
+    server.ensure_compile(*cursor.file);
+    auto& name_map = server.last_compile->compiler->name_map;
 
     Loc cursor_range;
     const ast::NamedDecl* target_decl = name_map.find_decl_at(cursor);
@@ -531,7 +531,8 @@ void Server::setup_events() {
 
         auto cursor = convert_loc(pos.textDocument, pos.position);
 
-        auto& name_map = request_name_map(pos.textDocument.uri.path());
+        ensure_compile(pos.textDocument.uri.path());
+        auto& name_map = last_compile->compiler->name_map;
         
         // When on a reference try find declaration
         if(auto ref = name_map.find_ref_at(cursor)) {
@@ -629,11 +630,8 @@ void Server::setup_events() {
                  params.range.end.line + 1, params.range.end.character + 1);
 
         // Request compilation and name map for the file
-        auto& name_map = request_name_map(params.textDocument.uri.path());
-        if (!last_compile || !last_compile->compiler) {
-            log::info("[LSP] >>> No compilation result available for inlay hints");
-            return nullptr;
-        }
+        ensure_compile(params.textDocument.uri.path());
+        auto& name_map = last_compile->compiler->name_map;
 
         // Get the type hints from the type checker
         auto* type_hints = last_compile->compiler->type_checker.type_hints;
