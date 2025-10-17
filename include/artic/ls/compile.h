@@ -19,9 +19,8 @@ struct CompilerInstance {
     CompilerInstance()
         : arena(), type_table(), locator()
         , log(log::err, &locator)
-        , name_map(std::make_unique<NameMap>())
-        , name_binder(log, name_map.get())
-        , type_checker(log, type_table, arena, name_map.get())
+        , name_binder(log, &name_map)
+        , type_checker(log, type_table, arena, &name_map, &type_hints)
     {
         log.max_errors = 100;
         type_checker.warns_as_errors = warns_as_errors;
@@ -32,12 +31,14 @@ struct CompilerInstance {
 
     std::unique_ptr<CompileResult> compile_files(std::span<const workspace::File*> files);
 
+    NameMap name_map;
+    TypeHints type_hints;
+
     Arena arena;
     TypeTable type_table;
     Locator locator;
     Log log;
 
-    std::unique_ptr<NameMap> name_map;
     NameBinder name_binder;
     TypeChecker type_checker;
 

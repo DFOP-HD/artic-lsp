@@ -312,17 +312,13 @@ Loc convert_loc(const lsp::TextDocumentIdentifier& file, const lsp::Position& po
     );
 }
 
-NameMap* Server::request_name_map(std::string_view file_view) {
+const NameMap& Server::request_name_map(std::string_view file_view) {
     std::string file(file_view);
     bool already_compiled = last_compile && last_compile->compiler->locator.data(file);
     if (!already_compiled) compile_file(file);
     if (!last_compile) throw lsp::RequestError(lsp::Error::InternalError, "Did not get a compilation result");
 
-    auto& name_map = last_compile->compiler->name_map;
-    if (!name_map) {
-        return nullptr;
-    }
-    return name_map.get();
+    return last_compile->compiler->name_map;
 }
 struct IndentifierOccurences{
     std::string name;
@@ -333,19 +329,18 @@ struct IndentifierOccurences{
 };
 
 std::optional<IndentifierOccurences> find_occurrences_of_identifier(Server& server, const Loc& cursor, bool include_declaration) {
-    NameMap* name_map = server.request_name_map(*cursor.file);
-    if (!name_map) return std::nullopt;
+    auto& name_map = server.request_name_map(*cursor.file);
 
     Loc cursor_range;
-    const ast::NamedDecl* target_decl = name_map->find_decl_at(cursor);
+    const ast::NamedDecl* target_decl = name_map.find_decl_at(cursor);
     if(target_decl) {
         cursor_range = target_decl->id.loc;
         log::info("found declaration at cursor '{}'", target_decl->id.name);
     } else {
-        if(auto ref = name_map->find_ref_at(cursor)) {
-            auto id = name_map->get_identifier(*ref);
+        if(auto ref = name_map.find_ref_at(cursor)) {
+            auto id = name_map.get_identifier(*ref);
             cursor_range = id.loc;
-            target_decl = name_map->find_decl(*ref);
+            target_decl = name_map.find_decl(*ref);
             log::info("found reference at cursor '{}'", target_decl->id.name);
         }
     }
@@ -360,8 +355,8 @@ std::optional<IndentifierOccurences> find_occurrences_of_identifier(Server& serv
     }
 
     // Find all references to this declaration
-    for (auto ref : name_map->find_refs(target_decl)) {
-        locations.push_back(convert_loc(name_map->get_identifier(ref).loc));
+    for (auto ref : name_map.find_refs(target_decl)) {
+        locations.push_back(convert_loc(name_map.get_identifier(ref).loc));
     }
 
     return IndentifierOccurences {
@@ -536,12 +531,11 @@ void Server::setup_events() {
 
         auto cursor = convert_loc(pos.textDocument, pos.position);
 
-        auto* name_map = request_name_map(pos.textDocument.uri.path());
-        if (!name_map) return nullptr;
+        auto& name_map = request_name_map(pos.textDocument.uri.path());
         
         // When on a reference try find declaration
-        if(auto ref = name_map->find_ref_at(cursor)) {
-            if(auto def = name_map->find_decl(*ref)) {
+        if(auto ref = name_map.find_ref_at(cursor)) {
+            if(auto def = name_map.find_decl(*ref)) {
                 auto loc = convert_loc(def->id.loc);
                 log::info("[LSP] >>> return TextDocument Definition {}:{}:{}", loc.uri.path(), loc.range.start.line + 1, loc.range.start.character + 1);
                 return { loc };
@@ -635,8 +629,8 @@ void Server::setup_events() {
                  params.range.end.line + 1, params.range.end.character + 1);
 
         // Request compilation and name map for the file
-        auto* name_map = request_name_map(params.textDocument.uri.path());
-        if (!name_map || !last_compile || !last_compile->compiler) {
+        auto& name_map = request_name_map(params.textDocument.uri.path());
+        if (!last_compile || !last_compile->compiler) {
             log::info("[LSP] >>> No compilation result available for inlay hints");
             return nullptr;
         }

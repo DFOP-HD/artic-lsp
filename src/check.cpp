@@ -1692,7 +1692,7 @@ const artic::Type* LetDecl::infer(TypeChecker& checker) {
     else
         t = checker.infer(*ptrn);
     if(ptrn->isa<IdPtrn>()) {
-        checker.type_hints->emplace_back(TypeChecker::TypeHint{ptrn->loc, t});
+        checker.type_hints->emplace_back(ls::TypeHint{ptrn->loc, t});
     }
 
     checker.check_refutability(*ptrn, true);
