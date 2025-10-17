@@ -346,25 +346,36 @@ struct SemanticToken {
 };
 
 SemanticToken create_semantic_token(const Loc& loc, const ast::NamedDecl& decl, bool is_decl) {
-    SemanticToken token;
-    token.line = loc.begin.row - 1;
-    token.start = loc.begin.col - 1;
-    token.length = loc.end.col - loc.begin.col;
+    SemanticToken token {
+        .line =   (uint32_t) loc.begin.row - 1,
+        .start =  (uint32_t) loc.begin.col - 1,
+        .length = (uint32_t) loc.end.col - loc.begin.col,
+        .type = 0,
+        .modifiers = 0,
+    };
     using ty = lsp::SemanticTokenTypes;
     using md = lsp::SemanticTokenModifiers;
 
     auto flag = [](md mod) -> uint32_t  {
         uint32_t val = static_cast<uint32_t>(mod);
-        if(val == 0) return 0u;
-        else return 1u << (val-1);
+        return 1u << (val);
     };
 
     if (auto t = decl.isa<ast::StaticDecl>()) {
         token.type = (uint32_t) ty::Variable;
         token.modifiers |= flag(md::Static);
+        if(!t->is_mut) token.modifiers |= flag(md::Readonly);
     } 
-    else if (decl.isa<ast::LetDecl>())    token.type = (uint32_t) ty::Variable;
-    else if (decl.isa<ast::PtrnDecl>())   token.type = (uint32_t) ty::Parameter; 
+    else if (auto t = decl.isa<ast::LetDecl>()) {
+        if(auto p = t->ptrn->isa<ast::PtrnDecl>()){
+            token.type = (uint32_t) ty::Variable;
+            if(!p->is_mut) token.modifiers |= flag(md::Readonly);
+        }
+    } 
+    else if (auto t = decl.isa<ast::PtrnDecl>()) {
+        token.type = (uint32_t) ty::Parameter;
+        if(!t->is_mut) token.modifiers |= flag(md::Readonly);
+    } 
     else if (decl.isa<ast::TypeParam>())  token.type = (uint32_t) ty::Type;
     else if (decl.isa<ast::FnDecl>())     token.type = (uint32_t) ty::Function;
     else if (decl.isa<ast::RecordDecl>()) token.type = (uint32_t) ty::Struct;
@@ -374,9 +385,10 @@ SemanticToken create_semantic_token(const Loc& loc, const ast::NamedDecl& decl, 
     else if (decl.isa<ast::ModDecl>())    token.type = (uint32_t) ty::Namespace;
     else if (decl.isa<ast::UseDecl>())    token.type = (uint32_t) ty::Namespace;
 
-    // if(is_decl){
-    //     token.modifiers |= flag(md::Definition);
-    // }
+    if(is_decl){
+        token.modifiers |= flag(md::Definition);
+        token.modifiers |= flag(md::Declaration);
+    }
     
     if(decl.type) {
         if(auto fn = decl.type->isa<FnType>()){
@@ -500,7 +512,7 @@ void Server::setup_events() {
     // Initilalize ----------------------------------------------------------------------
     message_handler_.add<reqst::Initialize>([this](reqst::Initialize::Params&& params) -> reqst::Initialize::Result {
         Timer _("Initialize");
-        log::info( "[LSP] <<< Initialize");
+        log::info( "\n[LSP] <<< Initialize");
         
         InitOptions init_data = parse_initialize_options(params, *this);
 
@@ -558,23 +570,23 @@ void Server::setup_events() {
     });
 
     message_handler_.add<notif::Initialized>([this](notif::Initialized::Params&&){
-        log::info("[LSP] <<< Initialized");
+        log::info("\n[LSP] <<< Initialized");
         reload_workspace();
     });
 
     // Shutdown ----------------------------------------------------------------------
     message_handler_.add<reqst::Shutdown>([this]() {
-        log::info("[LSP] <<< Shutdown");
+        log::info("\n[LSP] <<< Shutdown");
         running_ = false;
         return reqst::Shutdown::Result {};
     });
 
     // Textdocument ----------------------------------------------------------------------
     message_handler_.add<notif::TextDocument_DidClose>([](notif::TextDocument_DidClose::Params&& params) {
-        log::info("[LSP] <<< TextDocument DidClose");
+        log::info("\n[LSP] <<< TextDocument DidClose");
     });
     message_handler_.add<notif::TextDocument_DidOpen>([this](notif::TextDocument_DidOpen::Params&& params) {
-        log::info("[LSP] <<< TextDocument DidOpen");
+        log::info("\n[LSP] <<< TextDocument DidOpen");
 
         if(get_file_type(params.textDocument.uri.path()) == FileType::SourceFile) {
             auto path = std::string(params.textDocument.uri.path());
@@ -587,50 +599,35 @@ void Server::setup_events() {
                 compile_file(path);
         }
     });
-    // message_handler_.add<notif::TextDocument_DidChange>([this](notif::TextDocument_DidChange::Params&& params) {
-    message_handler_.add<notif::TextDocument_DidSave>([this](notif::TextDocument_DidSave::Params&& params) {
-        log::info("[LSP] <<< TextDocument DidSave");
-        
+    message_handler_.add<notif::TextDocument_DidChange>([this](notif::TextDocument_DidChange::Params&& params) {
+        log::info("\n[LSP] <<< TextDocument DidChange");
         // Clear the last compilation result to invalidate stale inlay hints
-        // This forces a recompilation when inlay hints are next requested
-        if (compile) {
-            compile.reset();
-        }
-        
-        // Send inlay hint refresh request to clear stale hints immediately
-        try {
-            message_handler_.sendRequest<reqst::Workspace_InlayHint_Refresh>(
-                [](reqst::Workspace_InlayHint_Refresh::Result&& result) {
-                    // Refresh completed
-                },
-                [](const lsp::ResponseError& error) {
-                    // Handle error if needed - this is expected if client doesn't support it
-                    log::info("Inlay hint refresh not supported by client");
-                }
-            );
-        } catch (...) {
-            // Ignore errors - not all clients support inlay hint refresh
-        }
+        compile.reset();
+        // Optional: clear semantic tokens on change
+        // (void)message_handler_.sendRequest<reqst::Workspace_SemanticTokens_Refresh>();
+        workspace_->mark_file_dirty(params.textDocument.uri.path());
+    });
 
-        if(get_file_type(params.textDocument.uri.path()) == FileType::ConfigFile) {
+    message_handler_.add<notif::TextDocument_DidSave>([this](notif::TextDocument_DidSave::Params&& params) {
+        log::info("\n[LSP] <<< TextDocument DidSave");
+        compile.reset();
+        auto file = params.textDocument.uri.path();
+        if(get_file_type(file) == FileType::ConfigFile) {
             reload_workspace();
             return;
         }
-        auto file = params.textDocument.uri.path();
-        workspace_->mark_file_dirty(file);
         compile_file(file);
+        (void)message_handler_.sendRequest<reqst::Workspace_SemanticTokens_Refresh>();
     });
 
     // Workspace ----------------------------------------------------------------------
 
     message_handler_.add<notif::Workspace_DidChangeConfiguration>([this](notif::Workspace_DidChangeConfiguration::Params&& params) {
-        log::info("[LSP] <<< Workspace DidChangeConfiguration");
+        log::info("\n[LSP] <<< Workspace DidChangeConfiguration");
         // Optionally, could inspect params.settings to override paths.
         reload_workspace();
     });
     message_handler_.add<notif::Workspace_DidChangeWatchedFiles>([this](notif::Workspace_DidChangeWatchedFiles::Params&& params) {
-        log::info("[LSP] <<< Workspace DidChangeWatchedFiles");
-
         for(auto& change : params.changes) {
             auto path = change.uri.path();
 
@@ -670,7 +667,7 @@ void Server::setup_events() {
     
     message_handler_.add<reqst::TextDocument_Definition>([this](lsp::TextDocumentPositionParams&& pos) -> reqst::TextDocument_Definition::Result {
         Timer _("TextDocument_Definition");
-        log::info("[LSP] <<< TextDocument Definition {}:{}:{}", pos.textDocument.uri.path(), pos.position.line + 1, pos.position.character + 1);
+        log::info("\n[LSP] <<< TextDocument Definition {}:{}:{}", pos.textDocument.uri.path(), pos.position.line + 1, pos.position.character + 1);
 
         auto cursor = convert_loc(pos.textDocument, pos.position);
 
@@ -698,7 +695,7 @@ void Server::setup_events() {
 
     message_handler_.add<reqst::TextDocument_References>([this](lsp::ReferenceParams&& params) -> reqst::TextDocument_References::Result {
         Timer _("TextDocument_References");
-        log::info("[LSP] <<< TextDocument References {}:{}:{}", params.textDocument.uri.path(), params.position.line + 1, params.position.character + 1);
+        log::info("\n[LSP] <<< TextDocument References {}:{}:{}", params.textDocument.uri.path(), params.position.line + 1, params.position.character + 1);
 
         auto cursor = convert_loc(params.textDocument, params.position);
         auto occurences = find_occurrences_of_identifier(*this, cursor, true);
@@ -709,7 +706,7 @@ void Server::setup_events() {
 
     message_handler_.add<reqst::TextDocument_PrepareRename>([this](lsp::TextDocumentPositionParams&& params) -> reqst::TextDocument_PrepareRename::Result {
         Timer _("TextDocument_PrepareRename");
-        log::info("[LSP] <<< TextDocument PrepareRename {}:{}:{}", 
+        log::info("\n[LSP] <<< TextDocument PrepareRename {}:{}:{}", 
                 params.textDocument.uri.path(), params.position.line + 1, params.position.character + 1);
 
         auto cursor = convert_loc(params.textDocument, params.position);
@@ -730,7 +727,7 @@ void Server::setup_events() {
 
     message_handler_.add<reqst::TextDocument_Rename>([this](lsp::RenameParams&& params) -> reqst::TextDocument_Rename::Result {
         Timer _("TextDocument_Rename");
-        log::info("[LSP] <<< TextDocument Rename {}:{}:{} -> '{}'", 
+        log::info("\n[LSP] <<< TextDocument Rename {}:{}:{} -> '{}'", 
                  params.textDocument.uri.path(), params.position.line + 1, params.position.character + 1, params.newName);
 
         auto cursor = convert_loc(params.textDocument, params.position);
@@ -772,12 +769,15 @@ void Server::setup_events() {
     message_handler_.add<reqst::TextDocument_InlayHint>([this](reqst::TextDocument_InlayHint::Params&& params) -> reqst::TextDocument_InlayHint::Result {
         Timer _("TextDocument_InlayHint");
         std::string file(params.textDocument.uri.path());
-        log::info("[LSP] <<< TextDocument InlayHint {}:{}:{} to {}:{}", 
-                 file, 
-                 params.range.start.line + 1, params.range.start.character + 1,
-                 params.range.end.line + 1, params.range.end.character + 1);
+        log::info("\n[LSP] <<< TextDocument InlayHint {}:{}:{} to {}:{}", 
+            file, 
+            params.range.start.line + 1, params.range.start.character + 1,
+            params.range.end.line + 1, params.range.end.character + 1);
 
-        ensure_compile(file);
+        // inlay hints are not allowed to trigger recompile as this is called right after document changed
+        bool already_compiled = compile && compile->locator.data(file);
+        if(!already_compiled) return nullptr;
+        // ensure_compile(file);
 
         lsp::Array<lsp::InlayHint> hints;
         if(!compile->name_map.files.contains(file))
@@ -833,9 +833,12 @@ void Server::setup_events() {
     message_handler_.add<reqst::TextDocument_SemanticTokens_Full>([this](lsp::SemanticTokensParams&& params) -> reqst::TextDocument_SemanticTokens_Full::Result {
         Timer _("TextDocument_SemanticTokens_Full");
         std::string file(params.textDocument.uri.path());
-        log::info("[LSP] <<< TextDocument SemanticTokens_Full {}", file);
+        log::info("\n[LSP] <<< TextDocument SemanticTokens_Full {}", file);
         
-        ensure_compile(file);
+        // semantic tokens are not allowed to trigger recompile as this is called right after document changed
+        bool already_compiled = compile && compile->locator.data(file);
+        if(!already_compiled) return nullptr;
+        // ensure_compile(file);
         auto tokens = tokens::collect(compile->name_map, std::string(params.textDocument.uri.path()));
         
         log::info("[LSP] >>> Returning {} semantic tokens", tokens.data.size());
@@ -845,12 +848,14 @@ void Server::setup_events() {
     message_handler_.add<reqst::TextDocument_SemanticTokens_Range>([this](lsp::SemanticTokensRangeParams&& params) -> reqst::TextDocument_SemanticTokens_Range::Result {
         Timer _("TextDocument_SemanticTokens_Range");
         std::string file(params.textDocument.uri.path());
-        log::info("[LSP] <<< TextDocument SemanticTokens_Range {}:{}:{} to {}:{}", 
+        log::info("\n[LSP] <<< TextDocument SemanticTokens_Range {}:{}:{} to {}:{}", 
                  file,
                  params.range.start.line + 1, params.range.start.character + 1,
                  params.range.end.line + 1, params.range.end.character + 1);
-        
-        ensure_compile(file);
+        // semantic tokens are not allowed to trigger recompile as this is called right after document changed
+        bool already_compiled = compile && compile->locator.data(file);
+        if(!already_compiled) return nullptr;
+        // ensure_compile(file);
         auto tokens = tokens::collect(
             compile->name_map, std::string(params.textDocument.uri.path()), 
             params.range.start.line + 1, 
