@@ -13,27 +13,14 @@
 
 namespace artic {
 
-namespace ls {
-
-struct TypeHint {
-    Loc loc;
-    const Type* type;
-};
-using TypeHints = std::vector<TypeHint>;
-
-} // namespace ls
-
-
-
 /// Utility class to perform bidirectional type checking.
 class TypeChecker : public Logger {
 public:
-    TypeChecker(Log& log, TypeTable& type_table, Arena& arena, ls::NameMap* name_map = nullptr, ls::TypeHints* type_hints = nullptr)
-        : Logger(log), type_table(type_table), _arena(arena), name_map(name_map), type_hints(type_hints)
+    TypeChecker(Log& log, TypeTable& type_table, Arena& arena, ls::NameMap* name_map = nullptr)
+        : Logger(log), type_table(type_table), _arena(arena), name_map(name_map)
     {}
 
     ls::NameMap* name_map;
-    ls::TypeHints* type_hints;
 
     TypeTable& type_table;
 

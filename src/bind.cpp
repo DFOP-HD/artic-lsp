@@ -20,6 +20,10 @@ bool contains(const Loc& loc, const Loc& cursor, bool multiline_check){
 }
 using Ref = NameMap::Ref;
 using Decl = NameMap::Decl;
+void NameMap::add_type_hint(const ast::Node& node) {
+    if(!node.loc.file) return;
+    files[*node.loc.file].with_type_hint.push_back(&node);
+}
 
 void NameMap::insert(Decl decl, Ref ref) {
     if(!decl || !decl->id.loc.file) return;

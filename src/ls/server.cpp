@@ -16,6 +16,7 @@
 #include <lsp/messages.h>
 
 #include <fstream>
+#include <string>
 #include <string_view>
 #include <cctype>
 #include <sstream>
@@ -781,26 +782,30 @@ void Server::setup_events() {
     // req::TextDocument_Implementation
     // req::TextDocument_InlayHint
     message_handler_.add<reqst::TextDocument_InlayHint>([this](reqst::TextDocument_InlayHint::Params&& params) -> reqst::TextDocument_InlayHint::Result {
+        std::string file(params.textDocument.uri.path());
         log::info("[LSP] <<< TextDocument InlayHint {}:{}:{} to {}:{}", 
-                 params.textDocument.uri.path(), 
+                 file, 
                  params.range.start.line + 1, params.range.start.character + 1,
                  params.range.end.line + 1, params.range.end.character + 1);
 
-        ensure_compile(params.textDocument.uri.path());
-        auto& name_map = compile->name_map;
+        ensure_compile(file);
 
         lsp::Array<lsp::InlayHint> hints;
+        if(!compile->name_map.files.contains(file))
+            return hints;
         
         // Convert TypeHint structs to LSP InlayHint objects
-        for (const auto& hint : compile->type_hints) {
+        for (const auto* hint : compile->name_map.files.at(file).with_type_hint) {
+            auto& loc = hint->loc;
+            auto* type = hint->type;
             // Check if the hint location is within the requested range
-            if (!hint.loc.file || *hint.loc.file != params.textDocument.uri.path()) {
+            if (!loc.file || *loc.file != file) {
                 continue;
             }
 
             lsp::Position hint_pos{
-                static_cast<lsp::uint>(hint.loc.end.row - 1),
-                static_cast<lsp::uint>(hint.loc.end.col - 1)
+                static_cast<lsp::uint>(loc.end.row - 1),
+                static_cast<lsp::uint>(hint->loc.end.col - 1)
             };
 
             // Check if the hint position is within the requested range
@@ -813,11 +818,11 @@ void Server::setup_events() {
 
             // Format the type name for display
             std::string type_name = "<unknown>";
-            if (hint.type) {
+            if (type) {
                 std::ostringstream oss;
                 log::Output output(oss, false);
                 Printer printer(output);
-                hint.type->print(printer);
+                type->print(printer);
                 type_name = oss.str();
             }
             

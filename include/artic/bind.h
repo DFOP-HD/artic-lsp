@@ -26,6 +26,7 @@ public:
 
     void insert(Decl decl, Ref ref);
     void insert(Decl def);
+    void add_type_hint(const ast::Node& node);
 
     const std::vector<Ref>& find_refs(Decl decl) const;
     Decl find_decl(Ref ref) const;
@@ -34,10 +35,11 @@ public:
     std::optional<Ref> find_ref_at(const Loc& loc) const;
 
     const ast::Identifier& get_identifier(Ref ref) const;
-// private:
+
     struct Names {
         std::unordered_map<Ref, Decl> declaration_of;
         std::unordered_map<Decl, std::vector<Ref>> references_of;
+        std::vector<const ast::Node*> with_type_hint;
     };
     std::unordered_map<std::string, Names> files;
 };    

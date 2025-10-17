@@ -18,7 +18,7 @@ struct Compiler {
         : arena(), type_table(), locator()
         , log(log::err, &locator, 0, 0, &diagnostics)
         , name_binder(log, &name_map)
-        , type_checker(log, type_table, arena, &name_map, &type_hints)
+        , type_checker(log, type_table, arena, &name_map)
     {
         log.max_errors = 100;
         type_checker.warns_as_errors = warns_as_errors;
@@ -31,7 +31,6 @@ struct Compiler {
 
     // Output -----
     NameMap name_map;
-    TypeHints type_hints;
     std::vector<Diagnostic> diagnostics;
     Ptr<ast::ModDecl> program;
     
