@@ -5,6 +5,7 @@
 #include "artic/ls/workspace.h"
 #include "artic/log.h"
 #include "artic/ast.h"
+#include "artic/bind.h"
 #include "artic/print.h"
 #include "lsp/error.h"
 
@@ -16,6 +17,7 @@
 #include <string_view>
 #include <cctype>
 #include <sstream>
+#include <algorithm>
 
 
 #ifndef ENABLE_JSON
@@ -26,6 +28,138 @@ namespace reqst = lsp::requests;
 namespace notif = lsp::notifications;
 
 namespace artic::ls {
+
+// Semantic Token Helper Functions
+namespace {
+
+struct SemanticToken {
+    uint32_t line;
+    uint32_t start; 
+    uint32_t length;
+    uint32_t token_type;
+    uint32_t token_modifiers;
+};
+
+SemanticToken create_semantic_token(const Loc& loc, uint32_t token_type, uint32_t token_modifiers) {
+    return {
+        static_cast<uint32_t>(loc.begin.row - 1),
+        static_cast<uint32_t>(loc.begin.col - 1),
+        static_cast<uint32_t>(loc.end.col - loc.begin.col),
+        token_type,
+        token_modifiers
+    };
+}
+
+uint32_t get_token_type(const ast::NamedDecl* decl) {
+    // Map AST node types to semantic token types
+    if (decl->isa<ast::FnDecl>()) {
+        return 2; // "function" 
+    } else if (decl->isa<ast::StaticDecl>()) {
+        return 0; // "variable"
+    } else if (decl->isa<ast::PtrnDecl>()) {
+        return 1; // "parameter"
+    } else if (decl->isa<ast::StructDecl>()) {
+        return 5; // "struct"
+    } else if (decl->isa<ast::EnumDecl>()) {
+        return 7; // "enum"
+    } else if (decl->isa<ast::TypeDecl>()) {
+        return 8; // "type"
+    } else if (decl->isa<ast::FieldDecl>()) {
+        return 10; // "property"
+    } else if (decl->isa<ast::ModDecl>()) {
+        return 4; // "class" (using for modules)
+    }
+    return 0; // default to "variable"
+}
+
+uint32_t get_token_modifiers(const ast::NamedDecl* decl, bool is_declaration) {
+    uint32_t modifiers = 0;
+    if (is_declaration) {
+        modifiers |= (1 << 0); // "declaration" 
+    }
+    
+    // Check for static/readonly modifiers based on declaration type
+    if (decl->isa<ast::StaticDecl>()) {
+        modifiers |= (1 << 3); // "static"
+        auto static_decl = decl->as<ast::StaticDecl>();
+        if (!static_decl->is_mut) {
+            modifiers |= (1 << 2); // "readonly"
+        }
+    }
+    
+    return modifiers;
+}
+
+bool is_loc_in_range(const Loc& loc, const lsp::Range& range) {
+    uint32_t line = static_cast<uint32_t>(loc.begin.row - 1);
+    uint32_t char_start = static_cast<uint32_t>(loc.begin.col - 1);
+    uint32_t char_end = static_cast<uint32_t>(loc.end.col - 1);
+    
+    return (line >= range.start.line && line <= range.end.line) &&
+           (line > range.start.line || char_start >= range.start.character) &&
+           (line < range.end.line || char_end <= range.end.character);
+}
+
+lsp::SemanticTokens encode_semantic_tokens(const std::vector<SemanticToken>& tokens) {
+    std::vector<uint32_t> data;
+    uint32_t prev_line = 0;
+    uint32_t prev_start = 0;
+    
+    for (const auto& token : tokens) {
+        // Delta-encode the tokens as required by LSP spec
+        uint32_t delta_line = token.line - prev_line;
+        uint32_t delta_start = (delta_line == 0) ? token.start - prev_start : token.start;
+        
+        data.push_back(delta_line);
+        data.push_back(delta_start);
+        data.push_back(token.length);
+        data.push_back(token.token_type);
+        data.push_back(token.token_modifiers);
+        
+        prev_line = token.line;
+        prev_start = token.start;
+    }
+    
+    return lsp::SemanticTokens{
+        .data = data
+    };
+}
+
+// Collect semantic tokens from the NameMap by iterating over declarations and references
+void collect_semantic_tokens_from_namemap(const ls::NameMap& name_map, const std::string& target_file, std::vector<SemanticToken>& tokens) {
+    // Check if we have entries for this file
+    auto file_it = name_map.files.find(target_file);
+    if (file_it == name_map.files.end()) {
+        return;
+    }
+    
+    const auto& names = file_it->second;
+    
+    // Collect tokens from references (this is where we want semantic highlighting)
+    for (const auto& [ref, decl] : names.declaration_of) {
+        const auto& identifier = name_map.get_identifier(ref);
+        if (identifier.loc.file && *identifier.loc.file == target_file) {
+            tokens.push_back(create_semantic_token(
+                identifier.loc,
+                get_token_type(decl),
+                get_token_modifiers(decl, false) // This is a reference, not a declaration
+            ));
+        }
+    }
+    
+    // Collect tokens from declarations
+    for (const auto& [decl, refs] : names.references_of) {
+        if (decl->id.loc.file && *decl->id.loc.file == target_file) {
+            tokens.push_back(create_semantic_token(
+                decl->id.loc,
+                get_token_type(decl),
+                get_token_modifiers(decl, true) // This is a declaration
+            ));
+        }
+    }
+}
+
+} // anonymous namespace
 
 // Server ---------------------------------------------------------------------
 
@@ -368,7 +502,7 @@ std::optional<IndentifierOccurences> find_occurrences_of_identifier(Server& serv
 
 void Server::setup_events() {
     // Initilalize ----------------------------------------------------------------------
-    message_handler_.add<reqst::Initialize>([this](reqst::Initialize::Params&& params) {
+    message_handler_.add<reqst::Initialize>([this](reqst::Initialize::Params&& params) -> reqst::Initialize::Result {
         log::info( "[LSP] <<< Initialize");
         
         InitOptions init_data = parse_initialize_options(params, *this);
@@ -395,6 +529,25 @@ void Server::setup_events() {
                 .referencesProvider = true,
                 .renameProvider = lsp::RenameOptions {
                     .prepareProvider = true
+                },
+                .semanticTokensProvider = lsp::SemanticTokensOptions{
+                    .legend = lsp::SemanticTokensLegend{
+                        .tokenTypes = {
+                            "variable", "parameter", "function", "method", "class", 
+                            "struct", "interface", "enum", "type", "typeParameter",
+                            "property", "enumMember", "macro", "keyword", "comment",
+                            "string", "number", "operator"
+                        },
+                        .tokenModifiers = {
+                            "declaration", "definition", "readonly", "static", 
+                            "deprecated", "abstract", "async", "modification", 
+                            "documentation", "defaultLibrary"
+                        }
+                    },
+                    .range = true,
+                    .full = lsp::SemanticTokensOptionsFull{
+                        .delta = false
+                    }
                 },
                 .inlayHintProvider = lsp::InlayHintOptions {
                     .resolveProvider = false
@@ -675,6 +828,73 @@ void Server::setup_events() {
 
         log::info("[LSP] >>> Returning {} inlay hints", hints.size());
         return hints;
+    });
+
+    // Semantic Tokens ----------------------------------------------------------------------
+    message_handler_.add<reqst::TextDocument_SemanticTokens_Full>([this](lsp::SemanticTokensParams&& params) -> reqst::TextDocument_SemanticTokens_Full::Result {
+        std::string file(params.textDocument.uri.path());
+        log::info("[LSP] <<< TextDocument SemanticTokens_Full {}", file);
+        
+        ensure_compile(file);
+        if (!compile.has_value()) {
+            return lsp::Nullable<lsp::SemanticTokens>{};
+        }
+        
+        std::vector<SemanticToken> tokens;
+        
+        // Collect semantic tokens from the NameMap
+        collect_semantic_tokens_from_namemap(compile->name_map, file, tokens);
+        
+        // Sort tokens by position (required by LSP spec)
+        std::sort(tokens.begin(), tokens.end(), [](const SemanticToken& a, const SemanticToken& b) {
+            if (a.line != b.line) return a.line < b.line;
+            return a.start < b.start;
+        });
+        
+        auto result = encode_semantic_tokens(tokens);
+        
+        log::info("[LSP] >>> Returning {} semantic tokens", tokens.size());
+        return lsp::Nullable<lsp::SemanticTokens>{result};
+    });
+
+    message_handler_.add<reqst::TextDocument_SemanticTokens_Range>([this](lsp::SemanticTokensRangeParams&& params) -> reqst::TextDocument_SemanticTokens_Range::Result {
+        std::string file(params.textDocument.uri.path());
+        log::info("[LSP] <<< TextDocument SemanticTokens_Range {}:{}:{} to {}:{}", 
+                 file,
+                 params.range.start.line + 1, params.range.start.character + 1,
+                 params.range.end.line + 1, params.range.end.character + 1);
+        
+        ensure_compile(file);
+        if (!compile.has_value()) {
+            return lsp::Nullable<lsp::SemanticTokens>{};
+        }
+        
+        std::vector<SemanticToken> tokens;
+        
+        // Collect semantic tokens from the NameMap
+        collect_semantic_tokens_from_namemap(compile->name_map, file, tokens);
+        
+        // Filter tokens to only include those in the requested range
+        tokens.erase(std::remove_if(tokens.begin(), tokens.end(), [&params](const SemanticToken& token) {
+            uint32_t line = token.line;
+            uint32_t char_start = token.start;
+            uint32_t char_end = token.start + token.length;
+            
+            return !(line >= params.range.start.line && line <= params.range.end.line &&
+                    (line > params.range.start.line || char_start >= params.range.start.character) &&
+                    (line < params.range.end.line || char_end <= params.range.end.character));
+        }), tokens.end());
+        
+        // Sort tokens by position (required by LSP spec)
+        std::sort(tokens.begin(), tokens.end(), [](const SemanticToken& a, const SemanticToken& b) {
+            if (a.line != b.line) return a.line < b.line;
+            return a.start < b.start;
+        });
+        
+        auto result = encode_semantic_tokens(tokens);
+        
+        log::info("[LSP] >>> Returning {} semantic tokens in range", tokens.size());
+        return lsp::Nullable<lsp::SemanticTokens>{result};
     });
 
     // req::TextDocument_InlineCompletion

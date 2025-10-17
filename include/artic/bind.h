@@ -34,7 +34,7 @@ public:
     std::optional<Ref> find_ref_at(const Loc& loc) const;
 
     const ast::Identifier& get_identifier(Ref ref) const;
-private:
+// private:
     struct Names {
         std::unordered_map<Ref, Decl> declaration_of;
         std::unordered_map<Decl, std::vector<Ref>> references_of;
