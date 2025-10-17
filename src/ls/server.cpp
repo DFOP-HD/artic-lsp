@@ -426,9 +426,9 @@ void Server::setup_events() {
     });
 
     // Textdocument ----------------------------------------------------------------------
-    message_handler_.add<notif::TextDocument_DidChange>([](notif::TextDocument_DidChange::Params&& params) {
-        log::info("[LSP] <<< TextDocument DidChange");
-    });
+    // message_handler_.add<notif::TextDocument_DidSave>([](notif::TextDocument_DidSave::Params&& params) {
+    //     log::info("[LSP] <<< TextDocument DidSave");
+    // });
     message_handler_.add<notif::TextDocument_DidClose>([](notif::TextDocument_DidClose::Params&& params) {
         log::info("[LSP] <<< TextDocument DidClose");
     });
@@ -446,8 +446,31 @@ void Server::setup_events() {
                 compile_file(path);
         }
     });
-    message_handler_.add<notif::TextDocument_DidSave>([this](notif::TextDocument_DidSave::Params&& params) {
-        log::info("[LSP] <<< TextDocument DidSave");
+
+    message_handler_.add<notif::TextDocument_DidChange>([this](notif::TextDocument_DidChange::Params&& params) {
+        log::info("[LSP] <<< TextDocument DidChange");
+        
+        // Clear the last compilation result to invalidate stale inlay hints
+        // This forces a recompilation when inlay hints are next requested
+        if (last_compile) {
+            last_compile.reset();
+        }
+        
+        // Send inlay hint refresh request to clear stale hints immediately
+        try {
+            message_handler_.sendRequest<reqst::Workspace_InlayHint_Refresh>(
+                [](reqst::Workspace_InlayHint_Refresh::Result&& result) {
+                    // Refresh completed
+                },
+                [](const lsp::ResponseError& error) {
+                    // Handle error if needed - this is expected if client doesn't support it
+                    log::info("Inlay hint refresh not supported by client");
+                }
+            );
+        } catch (...) {
+            // Ignore errors - not all clients support inlay hint refresh
+        }
+
         if(get_file_type(params.textDocument.uri.path()) == FileType::ConfigFile) {
             reload_workspace();
             return;
@@ -458,7 +481,7 @@ void Server::setup_events() {
         if(it != files.end()) {
             it->second->read();
         }
-        compile_file(file);;
+        compile_file(file);
     });
 
     // Workspace ----------------------------------------------------------------------

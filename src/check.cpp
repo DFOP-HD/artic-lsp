@@ -1693,7 +1693,6 @@ const artic::Type* LetDecl::infer(TypeChecker& checker) {
         t = checker.infer(*ptrn);
     if(ptrn->isa<IdPtrn>()) {
         checker.type_hints->emplace_back(TypeChecker::TypeHint{ptrn->loc, t});
-        log::info("Id pattern with type {} at '{}'", ptrn->loc, *t);
     }
 
     checker.check_refutability(*ptrn, true);
