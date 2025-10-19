@@ -448,7 +448,7 @@ bool BlockExpr::has_side_effect() const {
 }
 
 bool CallExpr::is_jumping() const {
-    // if(!type) return false; 
+    if(!type) return false; 
     assert(type); // TODO this actually happens with a broken statement like `let a = return(;`
     return type->isa<artic::NoRetType>();
 }
