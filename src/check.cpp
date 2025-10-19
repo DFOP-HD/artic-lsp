@@ -872,13 +872,22 @@ const artic::Type* SizedArrayType::infer(TypeChecker& checker) {
                 decl = &mod_type->member(path.elems[i + 1].index);
             } else if (!path.is_ctor) {
                 assert(path.elems[i].inferred_args.empty());
-                assert(decl->isa<StaticDecl>() && "The only supported type right now.");
+                if(!decl->isa<StaticDecl>()) {
+                    checker.error(path.elems[i].loc, "Only static declarations are supported for array size");
+                    return checker.type_table.type_error();
+                }
                 break;
             } else if (match_app<StructType>(path.elems[i].type).second) {
-                assert(false && "This is not supported as a size for repeated arrays.");
+                checker.error(path.elems[i].loc, "Only static declarations are supported for array size");
+                return checker.type_table.type_error();
             } else if (auto [type_app, enum_type] = match_app<artic::EnumType>(path.elems[i].type); enum_type) {
-                assert(false && "This is not supported as a size for repeated arrays.");
+                checker.error(path.elems[i].loc, "This is not supported as a size for repeated arrays.");
+                return checker.type_table.type_error();
             }
+        }
+        if(auto s = decl->isa<StaticDecl>(); !s || !s->init || s->is_mut) {
+            checker.error(path.loc, "Only initialized non-mutable static declarations are supported for array size");
+            return checker.type_table.type_error();
         }
 
         auto static_decl = decl->as<StaticDecl>();
@@ -1047,13 +1056,23 @@ const artic::Type* RepeatArrayExpr::infer(TypeChecker& checker) {
                 decl = &mod_type->member(path.elems[i + 1].index);
             } else if (!path.is_ctor) {
                 assert(path.elems[i].inferred_args.empty());
-                assert(decl->isa<StaticDecl>() && "The only supported type right now.");
+                if(!decl->isa<StaticDecl>()) {
+                    checker.error(path.elems[i].loc, "Only static declarations are supported for repeated array size");
+                    return checker.type_table.type_error();
+                }
                 break;
             } else if (match_app<StructType>(path.elems[i].type).second) {
-                assert(false && "This is not supported as a size for repeated arrays.");
+                checker.error(path.elems[i].loc, "Only static declarations are supported for repeated array size");
+                return checker.type_table.type_error();
             } else if (auto [type_app, enum_type] = match_app<artic::EnumType>(path.elems[i].type); enum_type) {
-                assert(false && "This is not supported as a size for repeated arrays.");
+                checker.error(path.elems[i].loc, "Only static declarations are supported for repeated array size");
+                return checker.type_table.type_error();
             }
+        }
+
+        if(auto s = decl->isa<StaticDecl>(); !s || !s->init || s->is_mut) {
+            checker.error(path.loc, "Only initialized non-mutable static declarations are supported for repeated array size");
+            return checker.type_table.type_error();
         }
 
         auto static_decl = decl->as<StaticDecl>();
@@ -1080,13 +1099,23 @@ const artic::Type* RepeatArrayExpr::check(TypeChecker& checker, const artic::Typ
                 decl = &mod_type->member(path.elems[i + 1].index);
             } else if (!path.is_ctor) {
                 assert(path.elems[i].inferred_args.empty());
-                assert(decl->isa<StaticDecl>() && "The only supported type right now.");
+                if(!decl->isa<StaticDecl>()) {
+                    checker.error(path.elems[i].loc, "Only static declarations are supported for repeated array size");
+                    return checker.type_table.type_error();
+                }
                 break;
             } else if (match_app<StructType>(path.elems[i].type).second) {
-                assert(false && "This is not supported as a size for repeated arrays.");
+                checker.error(path.elems[i].loc, "Only static declarations are supported for repeated array size");
+                return checker.type_table.type_error();
             } else if (auto [type_app, enum_type] = match_app<artic::EnumType>(path.elems[i].type); enum_type) {
-                assert(false && "This is not supported as a size for repeated arrays.");
+                checker.error(path.elems[i].loc, "Only static declarations are supported for repeated array size");
+                return checker.type_table.type_error();
             }
+        }
+
+        if(auto s = decl->isa<StaticDecl>(); !s || !s->init || s->is_mut) {
+            checker.error(path.loc, "Only initialized non-mutable static declarations are supported for repeated array size");
+            return checker.type_table.type_error();
         }
 
         auto static_decl = decl->as<StaticDecl>();
@@ -1384,7 +1413,7 @@ const artic::Type* BreakExpr::infer(TypeChecker& checker) {
         if (!domain)
             return checker.cannot_infer(loc, "break expression");
     } else
-        assert(false);
+        return checker.cannot_infer(loc, "break expression");
     return checker.type_table.cn_type(domain);
 }
 
@@ -1404,7 +1433,7 @@ const artic::Type* ContinueExpr::infer(TypeChecker& checker) {
         if (!domain)
             return checker.cannot_infer(loc, "continue expression");
     } else
-        assert(false);
+        return checker.cannot_infer(loc, "break expression");
     return checker.type_table.cn_type(domain);
 }
 
