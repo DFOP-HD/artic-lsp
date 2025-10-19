@@ -33,8 +33,10 @@ struct Compiler {
     NameMap name_map;
     std::vector<Diagnostic> diagnostics;
     Ptr<ast::ModDecl> program;
+    bool parsed_all;
     
     // Input -----
+    bool safe_mode = false;
     std::vector<std::unique_ptr<workspace::File>> temporary_files; // used to keep temporary file alive after compilation
     std::filesystem::path active_file; // used for recompilation when the configuration changes. Could be done in a cleaner way
 

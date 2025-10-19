@@ -47,7 +47,8 @@ public:
 
     lsp::Connection connection_;
     lsp::MessageHandler message_handler_;
-    bool running_;
+    bool running_ = false;
+    bool safe_mode_ = false;
     
     // Project management
     std::unique_ptr<workspace::Workspace> workspace_;

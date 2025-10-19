@@ -81,9 +81,33 @@ Server::FileType Server::get_file_type(const std::filesystem::path& file) {
 //
 // -----------------------------------------------------------------------------
 
-
-void Server::compile_files(std::span<const workspace::File*> files){
+void Server::compile_file(const std::filesystem::path& file) {
     Timer _("Compile Files");
+
+    std::vector<const workspace::File*> files;
+    compile.emplace();
+    compile->active_file = file;
+
+    if(auto proj = workspace_->project_for_file(file)){
+        // known project    
+        log::info("Compiling file {} (project '{}')", file, proj.value()->name);
+
+        files = proj.value()->collect_files();
+    } else {
+        // default project
+        auto default_proj = workspace_->default_project();
+        
+        log::info("Compiling file {} (not in workspace -> using default project {})", file, default_proj->name);
+        
+        files = default_proj->collect_files();
+        auto temp_file = std::make_unique<workspace::File>(file);
+        temp_file->read();
+        files.push_back(temp_file.get());
+
+        // keep the temporary file alive for diagnostics
+        compile->temporary_files.push_back(std::move(temp_file));
+    }
+    
     if (files.empty()) {
         log::info("no input files (compile_files)");
         return;
@@ -91,8 +115,17 @@ void Server::compile_files(std::span<const workspace::File*> files){
 
     log::info("Compiling {} file(s)", files.size());
 
-    compile.emplace();
+    if(safe_mode_) {
+        compile->safe_mode = safe_mode_;
+        log::info("Using safe mode");
+    }
+
     compile->compile_files(files);
+
+    if(safe_mode_ && compile->parsed_all) {
+        safe_mode_ = false;
+        log::info("Successfully parsed all files, turning off safe mode");
+    }
 
     const bool print_compile_log = false;
     if(print_compile_log) compile->log.print_summary();
@@ -103,7 +136,7 @@ void Server::compile_files(std::span<const workspace::File*> files){
         log::info("Compile failed");
     }
 
-    auto convert_diagnostic = [](const Diagnostic& diag) {
+    auto convert_diagnostic = [](const Diagnostic& diag) -> lsp::Diagnostic {
         lsp::Diagnostic lsp_diag;
         lsp_diag.message = diag.message;
         lsp_diag.range = lsp::Range {
@@ -134,32 +167,6 @@ void Server::compile_files(std::span<const workspace::File*> files){
             }
         );
     }
-}
-
-void Server::compile_file(const std::filesystem::path& file){
-    if(auto proj = workspace_->project_for_file(file)){
-        // known project    
-        log::info("Compiling file {} (project '{}')", file, proj.value()->name);
-
-        auto files = proj.value()->collect_files();
-        compile_files(files);
-    } else {
-        // default project
-        auto default_proj = workspace_->default_project();
-        
-        log::info("Compiling file {} (not in workspace -> using default project {})", file, default_proj->name);
-        
-        auto files = default_proj->collect_files();
-        auto temp_file = std::make_unique<workspace::File>(file);
-        temp_file->read();
-        files.push_back(temp_file.get());
-
-        compile_files(files);
-
-        // keep the temporary file alive for diagnostics
-        if(compile) compile->temporary_files.push_back(std::move(temp_file));
-    }
-    if(compile) compile->active_file = file;
 }
 
 void Server::ensure_compile(std::string_view file_view) {
@@ -326,26 +333,32 @@ struct InitOptions {
     std::filesystem::path workspace_root;
     std::filesystem::path workspace_config_path;
     std::filesystem::path global_config_path;
+    bool restart_from_crash;
 };
 
-InitOptions parse_initialize_options(const reqst::Initialize::Params& params, Server& log) {
+InitOptions parse_initialize_options(const reqst::Initialize::Params& params, Server& server) {
     if (params.rootUri.isNull())
         throw lsp::RequestError(lsp::Error::InvalidParams, "No root URI provided in initialize request");
 
     InitOptions data;
     data.workspace_root = std::string(params.rootUri.value().path());
-    
+
     if (auto init = params.initializationOptions; init.has_value() && init->isObject()) {
         const auto& obj = init->object();
-        if (auto it = obj.find("workspaceConfig"); it != obj.end() && it->second.isString()) {
+        if (auto it = obj.find("workspaceConfig"); it != obj.end() && it->second.isString())
             data.workspace_config_path = it->second.string();
-        }
-        if (auto it = obj.find("globalConfig"); it != obj.end() && it->second.isString()) {
+
+        if (auto it = obj.find("globalConfig"); it != obj.end() && it->second.isString())
             data.global_config_path = it->second.string();
-        }
+        
+        if (auto it = obj.find("restartFromCrash"); it != obj.end() && it->second.isBoolean())
+            data.restart_from_crash = it->second.boolean();
     } else {
-        log.send_message("No workspace root provided in initialize request", lsp::MessageType::Error);
+        server.send_message("No initialization options provided in initialize request", lsp::MessageType::Error);
     }
+
+    if(data.workspace_config_path.empty()) server.send_message("No local artic.json workspace config", lsp::MessageType::Warning);
+    if(data.global_config_path.empty())    server.send_message("No global artic.json config", lsp::MessageType::Warning); 
     return data;
 }
 
@@ -356,11 +369,11 @@ void Server::setup_events_initialization() {
         
         InitOptions init_data = parse_initialize_options(params, *this);
 
-        if(init_data.workspace_config_path.empty()) send_message("No local artic.json workspace config", lsp::MessageType::Warning);
-        if(init_data.global_config_path.empty())    send_message("No global artic.json config", lsp::MessageType::Warning); 
         log::info("Workspace root: {}", init_data.workspace_root);
         log::info("Workspace config path: {}", init_data.workspace_config_path);
         log::info("Global config path: {}", init_data.global_config_path);
+
+        safe_mode_ = init_data.restart_from_crash;
         workspace_ = std::make_unique<workspace::Workspace>(
             init_data.workspace_root, 
             init_data.workspace_config_path, 

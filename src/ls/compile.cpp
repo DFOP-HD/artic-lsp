@@ -77,11 +77,13 @@ void Compiler::compile_files(std::span<const workspace::File*> files) {
         );
     }
 
-    if(log.errors > 0) {
-        log::error("Parsing failed");
-    }
-
     program->set_super();
+
+    parsed_all = log.errors == 0;
+    if(!parsed_all) {
+        log::error("Parsing failed");
+        if(safe_mode) return;
+    }
 
     Summoner summoner(log, arena);
 
