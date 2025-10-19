@@ -116,7 +116,7 @@ void Server::compile_file(const std::filesystem::path& file) {
     log::info("Compiling {} file(s)", files.size());
 
     if(safe_mode_) {
-        compile->safe_mode = safe_mode_;
+        compile->exclude_non_parsed_files = true;
         log::info("Using safe mode");
     }
 

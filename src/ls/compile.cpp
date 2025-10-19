@@ -66,7 +66,7 @@ void Compiler::compile_files(std::span<const workspace::File*> files) {
 
         if(log.errors > prev_errors) {
             log::error("Parsing failed for file {}", file->path);
-            if(!include_non_parsed_files) continue;
+            if(exclude_non_parsed_files) continue;
         } else {
             // log::info("Parsing success for file {}", file->path);
         }
@@ -82,7 +82,6 @@ void Compiler::compile_files(std::span<const workspace::File*> files) {
     parsed_all = log.errors == 0;
     if(!parsed_all) {
         log::error("Parsing failed");
-        if(safe_mode) return;
     }
 
     Summoner summoner(log, arena);
