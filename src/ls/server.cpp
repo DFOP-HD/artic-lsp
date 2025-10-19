@@ -72,7 +72,15 @@ Server::FileType Server::get_file_type(const std::filesystem::path& file) {
     return file.extension() == ".json" ? FileType::ConfigFile : FileType::SourceFile;
 }
 
-// Server Compilation / Diagnostics ----------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
+//
+//
+// Server Compilation / Diagnostics
+//
+//
+// -----------------------------------------------------------------------------
+
 
 void Server::compile_files(std::span<const workspace::File*> files){
     Timer _("Compile Files");
@@ -161,44 +169,76 @@ void Server::ensure_compile(std::string_view file_view) {
     if (!compile) throw lsp::RequestError(lsp::Error::InternalError, "Did not get a compilation result");
 }
 
-// Server Reload Workspace ----------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
+//
+//
+// Server Reload Workspace
+//
+//
+// -----------------------------------------------------------------------------
+
+
+using FileDiags = std::unordered_map<std::filesystem::path, std::vector<lsp::Diagnostic>>;
+
+void make_config_diagnostic(const workspace::config::ConfigLog::Message& msg, 
+    std::optional<std::filesystem::path> propagate_to_file,
+    FileDiags& diags
+) {
+    auto find_in_file = [](std::filesystem::path const& file, std::string_view literal) -> std::vector<lsp::Range> {
+        std::vector<lsp::Range> ranges;
+        if(literal.empty()) return ranges;
+        std::ifstream ifs(file);
+        if (!ifs) return ranges;
+
+        std::string line;
+        lsp::uint line_number = 0;
+        while (std::getline(ifs, line)) {
+            size_t pos = line.find(literal);
+            while (pos != std::string::npos) {
+                ranges.push_back(lsp::Range{
+                    lsp::Position{line_number, static_cast<lsp::uint>(pos)},
+                    lsp::Position{line_number, static_cast<lsp::uint>(pos + literal.size())}
+                });
+                pos = line.find(literal, pos + 1);
+            }
+            line_number++;
+        }
+        return ranges;
+    };
+    lsp::Diagnostic diag;
+    diag.message = msg.message;
+    diag.severity = msg.severity;
+    diag.range = lsp::Range{ lsp::Position{0,0}, lsp::Position{0,0} };
+    
+    auto file = msg.file;
+    if(propagate_to_file) {
+        if(propagate_to_file.value() == msg.file) return;
+        file = propagate_to_file.value();
+        diag.message = "[" + msg.file.string() + "] " + diag.message;
+    }
+
+    int display_count = 0;
+    if(msg.context.has_value()) {
+        auto literal = msg.context.value().literal;
+        if(propagate_to_file) literal = "include";
+
+        auto occurrences = find_in_file(file, literal);
+        for(auto& occ : occurrences) {
+            lsp::Diagnostic pos_diag(diag);
+            pos_diag.range = occ;
+            diags[file].push_back(pos_diag);
+            display_count++;
+        }
+    }
+    if(display_count == 0) diags[file].push_back(diag);
+};
 
 void Server::reload_workspace(const std::string& active_file) {
     Timer _("Reload Workspace");
     log::info("Reloading workspace configuration");
     workspace::config::ConfigLog log;
     workspace_->reload(log);
-    // This is somehow blocking. TODO investigate
-    publish_config_diagnostics(log);
-    if(compile){
-        auto file = compile->active_file;
-        compile_file(file);
-    }
-}
-
-static inline std::vector<lsp::Range> find_in_file(std::filesystem::path const& file, std::string_view literal){
-    std::vector<lsp::Range> ranges;
-    if(literal.empty()) return ranges;
-    std::ifstream ifs(file);
-    if (!ifs) return ranges;
-
-    std::string line;
-    lsp::uint line_number = 0;
-    while (std::getline(ifs, line)) {
-        size_t pos = line.find(literal);
-        while (pos != std::string::npos) {
-            ranges.push_back(lsp::Range{
-                lsp::Position{line_number, static_cast<lsp::uint>(pos)},
-                lsp::Position{line_number, static_cast<lsp::uint>(pos + literal.size())}
-            });
-            pos = line.find(literal, pos + 1);
-        }
-        line_number++;
-    }
-    return ranges;
-}
-
-void Server::publish_config_diagnostics(const workspace::config::ConfigLog& log) {
     const bool print_to_console = true;
     if(print_to_console) {
         log::info("Reloaded Workspace");
@@ -218,50 +258,16 @@ void Server::publish_config_diagnostics(const workspace::config::ConfigLog& log)
         workspace_->projects_.print();
     }
 
-    using FileDiags = std::unordered_map<std::filesystem::path, std::vector<lsp::Diagnostic>>;
     FileDiags fileDiags;
-
-    auto makeDiag = [](
-        const workspace::config::ConfigLog::Message& msg, 
-        std::optional<std::filesystem::path> propagate_to_file,
-        FileDiags& diags
-    ) {
-        lsp::Diagnostic diag;
-        diag.message = msg.message;
-        diag.severity = msg.severity;
-        diag.range = lsp::Range{ lsp::Position{0,0}, lsp::Position{0,0} };
-        
-        auto file = msg.file;
-        if(propagate_to_file) {
-            if(propagate_to_file.value() == msg.file) return;
-            file = propagate_to_file.value();
-            diag.message = "[" + msg.file.string() + "] " + diag.message;
-        }
-
-        int display_count = 0;
-        if(msg.context.has_value()) {
-            auto literal = msg.context.value().literal;
-            if(propagate_to_file) literal = "include";
-
-            auto occurrences = find_in_file(file, literal);
-            for(auto& occ : occurrences) {
-                lsp::Diagnostic pos_diag(diag);
-                pos_diag.range = occ;
-                diags[file].push_back(pos_diag);
-                display_count++;
-            }
-        }
-        if(display_count == 0) diags[file].push_back(diag);
-    };
 
     // create diagnostics
     for (const auto& e : log.messages) {
         // Diagnosics for the file itself
-        makeDiag(e, std::nullopt, fileDiags);
+        make_config_diagnostic(e, std::nullopt, fileDiags);
 
         // Propagate errors to the workspace config file
         if(e.severity == lsp::DiagnosticSeverity::Error) {
-            makeDiag(e, workspace_->workspace_config_path, fileDiags);
+            make_config_diagnostic(e, workspace_->workspace_config_path, fileDiags);
         }
     }
 
@@ -274,38 +280,11 @@ void Server::publish_config_diagnostics(const workspace::config::ConfigLog& log)
             }
         );
     }
-}
 
-// Server Events ----------------------------------------------------------------------
-
-struct InitOptions {
-    std::filesystem::path workspace_root;
-    std::filesystem::path workspace_config_path;
-    std::filesystem::path global_config_path;
-};
-
-InitOptions parse_initialize_options(const reqst::Initialize::Params& params, Server& log) {
-    InitOptions data;
-
-    if (params.rootUri.isNull()) {
-        log.send_message("No root URI provided in initialize request", lsp::MessageType::Error);
-        return data;
+    if(compile){
+        auto file = compile->active_file;
+        compile_file(file);
     }
-
-    data.workspace_root = std::string(params.rootUri.value().path());
-    
-    if (auto init = params.initializationOptions; init.has_value() && init->isObject()) {
-        const auto& obj = init->object();
-        if (auto it = obj.find("workspaceConfig"); it != obj.end() && it->second.isString()) {
-            data.workspace_config_path = it->second.string();
-        }
-        if (auto it = obj.find("globalConfig"); it != obj.end() && it->second.isString()) {
-            data.global_config_path = it->second.string();
-        }
-    } else {
-        log.send_message("No workspace root provided in initialize request", lsp::MessageType::Error);
-    }
-    return data;
 }
 
 lsp::Location convert_loc(const Loc& loc){
@@ -334,8 +313,199 @@ Loc convert_loc(const lsp::TextDocumentIdentifier& file, const lsp::Range& pos) 
     );
 }
 
-// Semantic Token Helper Functions
-namespace tokens {
+// -----------------------------------------------------------------------------
+//
+//
+// Initialization
+//
+//
+// -----------------------------------------------------------------------------
+
+
+struct InitOptions {
+    std::filesystem::path workspace_root;
+    std::filesystem::path workspace_config_path;
+    std::filesystem::path global_config_path;
+};
+
+InitOptions parse_initialize_options(const reqst::Initialize::Params& params, Server& log) {
+    if (params.rootUri.isNull())
+        throw lsp::RequestError(lsp::Error::InvalidParams, "No root URI provided in initialize request");
+
+    InitOptions data;
+    data.workspace_root = std::string(params.rootUri.value().path());
+    
+    if (auto init = params.initializationOptions; init.has_value() && init->isObject()) {
+        const auto& obj = init->object();
+        if (auto it = obj.find("workspaceConfig"); it != obj.end() && it->second.isString()) {
+            data.workspace_config_path = it->second.string();
+        }
+        if (auto it = obj.find("globalConfig"); it != obj.end() && it->second.isString()) {
+            data.global_config_path = it->second.string();
+        }
+    } else {
+        log.send_message("No workspace root provided in initialize request", lsp::MessageType::Error);
+    }
+    return data;
+}
+
+void Server::setup_events_initialization() {
+    message_handler_.add<reqst::Initialize>([this](reqst::Initialize::Params&& params) -> reqst::Initialize::Result {
+        Timer _("Initialize");
+        log::info( "\n[LSP] <<< Initialize");
+        
+        InitOptions init_data = parse_initialize_options(params, *this);
+
+        if(init_data.workspace_config_path.empty()) send_message("No local artic.json workspace config", lsp::MessageType::Warning);
+        if(init_data.global_config_path.empty())    send_message("No global artic.json config", lsp::MessageType::Warning); 
+        log::info("Workspace root: {}", init_data.workspace_root);
+        log::info("Workspace config path: {}", init_data.workspace_config_path);
+        log::info("Global config path: {}", init_data.global_config_path);
+        workspace_ = std::make_unique<workspace::Workspace>(
+            init_data.workspace_root, 
+            init_data.workspace_config_path, 
+            init_data.global_config_path
+        );
+        
+        return reqst::Initialize::Result {
+            .capabilities = lsp::ServerCapabilities{
+                .textDocumentSync = lsp::TextDocumentSyncOptions{
+                    .openClose = true,
+                    .change    = lsp::TextDocumentSyncKind::Incremental,
+                    .save      = lsp::SaveOptions{ .includeText = false },
+                },
+                .definitionProvider = true,
+                .referencesProvider = true,
+                .renameProvider = lsp::RenameOptions {
+                    .prepareProvider = true
+                },
+                .semanticTokensProvider = lsp::SemanticTokensOptions{
+                    .legend = lsp::SemanticTokensLegend{
+                        .tokenTypes = {
+                            "namespace", "type", "class", "enum", "interface", "struct", 
+                            "typeParameter", "parameter", "variable", "property", "enumMember",
+                            "event", "function", "method", "macro", "keyword",
+                            "modifier", "comment", "string", "number", "regexp", "operator"
+                        },
+                        .tokenModifiers = {
+                            "declaration", "definition", "readonly", "static", 
+                            "deprecated", "abstract", "async", "modification", 
+                            "documentation", "defaultLibrary"
+                        }
+                    },
+                    .range = true,
+                    .full = lsp::SemanticTokensOptionsFull{
+                        .delta = false
+                    }
+                },
+                .inlayHintProvider = lsp::InlayHintOptions {
+                    .resolveProvider = false
+                }
+            },
+            .serverInfo = lsp::InitializeResultServerInfo {
+                .name    = "Artic Language Server",
+                .version = "0.1.0"
+            }
+        };
+    });
+
+    message_handler_.add<notif::Initialized>([this](notif::Initialized::Params&&){
+        log::info("\n[LSP] <<< Initialized");
+        reload_workspace();
+    });
+
+    message_handler_.add<reqst::Shutdown>([this]() {
+        log::info("\n[LSP] <<< Shutdown");
+        running_ = false;
+        return reqst::Shutdown::Result {};
+    });
+}
+
+
+// -----------------------------------------------------------------------------
+//
+//
+// Modifications (File changes)
+//
+//
+// -----------------------------------------------------------------------------
+
+
+void Server::setup_events_modifications() {
+
+    // Textdocument ----------------------------------------------------------------------
+
+    message_handler_.add<notif::TextDocument_DidClose>([](notif::TextDocument_DidClose::Params&& params) {
+        log::info("\n[LSP] <<< TextDocument DidClose");
+    });
+    message_handler_.add<notif::TextDocument_DidOpen>([this](notif::TextDocument_DidOpen::Params&& params) {
+        log::info("\n[LSP] <<< TextDocument DidOpen");
+
+        if(get_file_type(params.textDocument.uri.path()) == FileType::SourceFile) {
+            auto path = std::string(params.textDocument.uri.path());
+            
+            // skip compilation on open when it was already compiled
+            // we need to do this as go to definition shortly opens the text document in vscode 
+            // and we don't want to invalidate the definition while looking it up
+            bool already_compiled = compile && compile->locator.data(path);
+            if(!already_compiled)
+                compile_file(path);
+        }
+    });
+    message_handler_.add<notif::TextDocument_DidChange>([this](notif::TextDocument_DidChange::Params&& params) {
+        log::info("\n[LSP] <<< TextDocument DidChange");
+        // Clear the last compilation result to invalidate stale inlay hints
+        compile.reset();
+        // Optional: clear semantic tokens on change
+        // (void)message_handler_.sendRequest<reqst::Workspace_SemanticTokens_Refresh>();
+        workspace_->mark_file_dirty(params.textDocument.uri.path());
+    });
+
+    message_handler_.add<notif::TextDocument_DidSave>([this](notif::TextDocument_DidSave::Params&& params) {
+        log::info("\n[LSP] <<< TextDocument DidSave");
+        compile.reset();
+        auto file = params.textDocument.uri.path();
+        if(get_file_type(file) == FileType::ConfigFile) {
+            reload_workspace();
+            return;
+        }
+        compile_file(file);
+        (void)message_handler_.sendRequest<reqst::Workspace_SemanticTokens_Refresh>();
+    });
+
+    // Workspace ----------------------------------------------------------------------
+
+    message_handler_.add<notif::Workspace_DidChangeConfiguration>([this](notif::Workspace_DidChangeConfiguration::Params&& params) {
+        log::info("\n[LSP] <<< Workspace DidChangeConfiguration");
+        // Optionally, could inspect params.settings to override paths.
+        reload_workspace();
+    });
+    message_handler_.add<notif::Workspace_DidChangeWatchedFiles>([this](notif::Workspace_DidChangeWatchedFiles::Params&& params) {
+        for(auto& change : params.changes) {
+            auto path = change.uri.path();
+
+            switch(change.type.index()) {
+                case lsp::FileChangeType::Created: 
+                case lsp::FileChangeType::Deleted: {
+                    reload_workspace();
+                    return;
+                }
+                case lsp::FileChangeType::Changed: break; // Handle elsewhere
+                case lsp::FileChangeType::MAX_VALUE: break;
+            }
+        }
+    });
+}
+
+
+// -----------------------------------------------------------------------------
+//
+//
+// Semantic Tokens
+//
+//
+// -----------------------------------------------------------------------------
+
 
 struct SemanticToken {
     uint32_t line;
@@ -427,7 +597,7 @@ lsp::SemanticTokens collect(
             tokens.push_back(create_semantic_token(loc, *decl, true));
     }
 
-    std::sort(tokens.begin(), tokens.end(), [](const tokens::SemanticToken& a, const tokens::SemanticToken& b) {
+    std::sort(tokens.begin(), tokens.end(), [](const SemanticToken& a, const SemanticToken& b) {
         if (a.line != b.line) return a.line < b.line;
         return a.start < b.start;
     });
@@ -458,14 +628,60 @@ lsp::SemanticTokens collect(
     };
 }
 
+void Server::setup_events_tokens() {
+    // Semantic Tokens ----------------------------------------------------------------------
+    message_handler_.add<reqst::TextDocument_SemanticTokens_Full>([this](lsp::SemanticTokensParams&& params) -> reqst::TextDocument_SemanticTokens_Full::Result {
+        Timer _("TextDocument_SemanticTokens_Full");
+        std::string file(params.textDocument.uri.path());
+        log::info("\n[LSP] <<< TextDocument SemanticTokens_Full {}", file);
+        
+        // semantic tokens are not allowed to trigger recompile as this is called right after document changed
+        bool already_compiled = compile && compile->locator.data(file);
+        if(!already_compiled) return nullptr;
+        // ensure_compile(file);
+        auto tokens = collect(compile->name_map, std::string(params.textDocument.uri.path()));
+        
+        log::info("[LSP] >>> Returning {} semantic tokens", tokens.data.size());
+        return tokens;
+    });
+
+    message_handler_.add<reqst::TextDocument_SemanticTokens_Range>([this](lsp::SemanticTokensRangeParams&& params) -> reqst::TextDocument_SemanticTokens_Range::Result {
+        Timer _("TextDocument_SemanticTokens_Range");
+        std::string file(params.textDocument.uri.path());
+        log::info("\n[LSP] <<< TextDocument SemanticTokens_Range {}:{}:{} to {}:{}", 
+                 file,
+                 params.range.start.line + 1, params.range.start.character + 1,
+                 params.range.end.line + 1, params.range.end.character + 1);
+        // semantic tokens are not allowed to trigger recompile as this is called right after document changed
+        bool already_compiled = compile && compile->locator.data(file);
+        if(!already_compiled) return nullptr;
+        // ensure_compile(file);
+        auto tokens = collect(
+            compile->name_map, std::string(params.textDocument.uri.path()), 
+            params.range.start.line + 1, 
+            params.range.end.line + 1);
+        
+        log::info("[LSP] >>> Returning {} semantic tokens", tokens.data.size());
+        return tokens;
+    });
 }
+
+
+// -----------------------------------------------------------------------------
+//
+//
+// Definitions
+//
+//
+// -----------------------------------------------------------------------------
 
 struct IndentifierOccurences{
     std::string name;
+    std::vector<lsp::Location> all_occurences;
+
+    // Additional info
     lsp::Location cursor_range;
     lsp::Location declaration_range;
-
-    std::vector<lsp::Location> all_occurences;
 };
 
 std::optional<IndentifierOccurences> find_occurrences_of_identifier(Server& server, const Loc& cursor, bool include_declaration) {
@@ -502,169 +718,13 @@ std::optional<IndentifierOccurences> find_occurrences_of_identifier(Server& serv
 
     return IndentifierOccurences {
         .name = target_decl->id.name,
+        .all_occurences = std::move(locations),
         .cursor_range = convert_loc(cursor_range),
         .declaration_range = convert_loc(target_decl->id.loc),
-        .all_occurences = locations
     };
 }
 
-void Server::setup_events() {
-    // Initilalize ----------------------------------------------------------------------
-    message_handler_.add<reqst::Initialize>([this](reqst::Initialize::Params&& params) -> reqst::Initialize::Result {
-        Timer _("Initialize");
-        log::info( "\n[LSP] <<< Initialize");
-        
-        InitOptions init_data = parse_initialize_options(params, *this);
-
-        if(init_data.workspace_config_path.empty()) send_message("No local artic.json workspace config", lsp::MessageType::Warning);
-        if(init_data.global_config_path.empty())    send_message("No global artic.json config", lsp::MessageType::Warning); 
-        log::info("Workspace root: {}", init_data.workspace_root);
-        log::info("Workspace config path: {}", init_data.workspace_config_path);
-        log::info("Global config path: {}", init_data.global_config_path);
-        workspace_ = std::make_unique<workspace::Workspace>(
-            init_data.workspace_root, 
-            init_data.workspace_config_path, 
-            init_data.global_config_path
-        );
-        
-        return reqst::Initialize::Result {
-            .capabilities = lsp::ServerCapabilities{
-                .textDocumentSync = lsp::TextDocumentSyncOptions{
-                    .openClose = true,
-                    .change    = lsp::TextDocumentSyncKind::Incremental,
-                    .save      = lsp::SaveOptions{ .includeText = false },
-                },
-                .definitionProvider = true,
-                .referencesProvider = true,
-                .renameProvider = lsp::RenameOptions {
-                    .prepareProvider = true
-                },
-                .semanticTokensProvider = lsp::SemanticTokensOptions{
-                    .legend = lsp::SemanticTokensLegend{
-                        .tokenTypes = {
-                            "namespace", "type", "class", "enum", "interface", "struct", 
-                            "typeParameter", "parameter", "variable", "property", "enumMember",
-                            "event", "function", "method", "macro", "keyword",
-                            "modifier", "comment", "string", "number", "regexp", "operator"
-                        },
-                        .tokenModifiers = {
-                            "declaration", "definition", "readonly", "static", 
-                            "deprecated", "abstract", "async", "modification", 
-                            "documentation", "defaultLibrary"
-                        }
-                    },
-                    .range = true,
-                    .full = lsp::SemanticTokensOptionsFull{
-                        .delta = false
-                    }
-                },
-                .inlayHintProvider = lsp::InlayHintOptions {
-                    .resolveProvider = false
-                }
-            },
-            .serverInfo = lsp::InitializeResultServerInfo {
-                .name    = "Artic Language Server",
-                .version = "0.1.0"
-            }
-        };
-    });
-
-    message_handler_.add<notif::Initialized>([this](notif::Initialized::Params&&){
-        log::info("\n[LSP] <<< Initialized");
-        reload_workspace();
-    });
-
-    // Shutdown ----------------------------------------------------------------------
-    message_handler_.add<reqst::Shutdown>([this]() {
-        log::info("\n[LSP] <<< Shutdown");
-        running_ = false;
-        return reqst::Shutdown::Result {};
-    });
-
-    // Textdocument ----------------------------------------------------------------------
-    message_handler_.add<notif::TextDocument_DidClose>([](notif::TextDocument_DidClose::Params&& params) {
-        log::info("\n[LSP] <<< TextDocument DidClose");
-    });
-    message_handler_.add<notif::TextDocument_DidOpen>([this](notif::TextDocument_DidOpen::Params&& params) {
-        log::info("\n[LSP] <<< TextDocument DidOpen");
-
-        if(get_file_type(params.textDocument.uri.path()) == FileType::SourceFile) {
-            auto path = std::string(params.textDocument.uri.path());
-            
-            // skip compilation on open when it was already compiled
-            // we need to do this as go to definition shortly opens the text document in vscode 
-            // and we don't want to invalidate the definition while looking it up
-            bool already_compiled = compile && compile->locator.data(path);
-            if(!already_compiled)
-                compile_file(path);
-        }
-    });
-    message_handler_.add<notif::TextDocument_DidChange>([this](notif::TextDocument_DidChange::Params&& params) {
-        log::info("\n[LSP] <<< TextDocument DidChange");
-        // Clear the last compilation result to invalidate stale inlay hints
-        compile.reset();
-        // Optional: clear semantic tokens on change
-        // (void)message_handler_.sendRequest<reqst::Workspace_SemanticTokens_Refresh>();
-        workspace_->mark_file_dirty(params.textDocument.uri.path());
-    });
-
-    message_handler_.add<notif::TextDocument_DidSave>([this](notif::TextDocument_DidSave::Params&& params) {
-        log::info("\n[LSP] <<< TextDocument DidSave");
-        compile.reset();
-        auto file = params.textDocument.uri.path();
-        if(get_file_type(file) == FileType::ConfigFile) {
-            reload_workspace();
-            return;
-        }
-        compile_file(file);
-        (void)message_handler_.sendRequest<reqst::Workspace_SemanticTokens_Refresh>();
-    });
-
-    // Workspace ----------------------------------------------------------------------
-
-    message_handler_.add<notif::Workspace_DidChangeConfiguration>([this](notif::Workspace_DidChangeConfiguration::Params&& params) {
-        log::info("\n[LSP] <<< Workspace DidChangeConfiguration");
-        // Optionally, could inspect params.settings to override paths.
-        reload_workspace();
-    });
-    message_handler_.add<notif::Workspace_DidChangeWatchedFiles>([this](notif::Workspace_DidChangeWatchedFiles::Params&& params) {
-        for(auto& change : params.changes) {
-            auto path = change.uri.path();
-
-            switch(change.type.index()) {
-                case lsp::FileChangeType::Created: 
-                case lsp::FileChangeType::Deleted: {
-                    reload_workspace();
-                    return;
-                }
-                case lsp::FileChangeType::Changed: break; // Handle elsewhere
-                case lsp::FileChangeType::MAX_VALUE: break;
-            }
-        }
-    });
-
-    // notif::Workspace_DidChangeWorkspaceFolders
-    // notif::Workspace_DidCreateFiles
-    // notif::Workspace_DidDeleteFiles
-    // notif::Workspace_DidRenameFiles
-
-    // Other ----------------------------------------------------------------------
-
-    // req::CallHierarchy_IncomingCalls
-    // req::CallHierarchy_OutgoingCalls
-    // req::Client_RegisterCapability
-    // req::Client_UnregisterCapability
-    // req::CodeAction_Resolve
-    // req::CodeLens_Resolve
-    // req::CompletionItem_Resolve
-    // req::DocumentLink_Resolve
-    // req::InlayHint_Resolve
-    // req::TextDocument_CodeAction
-    // req::TextDocument_CodeLens
-    // req::TextDocument_ColorPresentation
-    // req::TextDocument_Completion
-    // req::TextDocument_Declaration
-    
+void Server::setup_events_definitions() {
     message_handler_.add<reqst::TextDocument_Definition>([this](lsp::TextDocumentPositionParams&& pos) -> reqst::TextDocument_Definition::Result {
         Timer _("TextDocument_Definition");
         log::info("\n[LSP] <<< TextDocument Definition {}:{}:{}", pos.textDocument.uri.path(), pos.position.line + 1, pos.position.character + 1);
@@ -755,17 +815,19 @@ void Server::setup_events() {
 
         return workspace_edit;
     });
+}
 
-    // req::TextDocument_Diagnostic
-    // req::TextDocument_DocumentColor
-    // req::TextDocument_DocumentHighlight
-    // req::TextDocument_DocumentLink
-    // req::TextDocument_DocumentSymbol
-    // req::TextDocument_FoldingRange
-    // req::TextDocument_Formatting
-    // req::TextDocument_Hover
-    // req::TextDocument_Implementation
-    // req::TextDocument_InlayHint
+
+// -----------------------------------------------------------------------------
+//
+//
+// Other
+//
+//
+// -----------------------------------------------------------------------------
+
+void Server::setup_events_other() {
+
     message_handler_.add<reqst::TextDocument_InlayHint>([this](reqst::TextDocument_InlayHint::Params&& params) -> reqst::TextDocument_InlayHint::Result {
         Timer _("TextDocument_InlayHint");
         std::string file(params.textDocument.uri.path());
@@ -829,42 +891,37 @@ void Server::setup_events() {
         return hints;
     });
 
-    // Semantic Tokens ----------------------------------------------------------------------
-    message_handler_.add<reqst::TextDocument_SemanticTokens_Full>([this](lsp::SemanticTokensParams&& params) -> reqst::TextDocument_SemanticTokens_Full::Result {
-        Timer _("TextDocument_SemanticTokens_Full");
-        std::string file(params.textDocument.uri.path());
-        log::info("\n[LSP] <<< TextDocument SemanticTokens_Full {}", file);
-        
-        // semantic tokens are not allowed to trigger recompile as this is called right after document changed
-        bool already_compiled = compile && compile->locator.data(file);
-        if(!already_compiled) return nullptr;
-        // ensure_compile(file);
-        auto tokens = tokens::collect(compile->name_map, std::string(params.textDocument.uri.path()));
-        
-        log::info("[LSP] >>> Returning {} semantic tokens", tokens.data.size());
-        return tokens;
-    });
+    // notif::Workspace_DidChangeWorkspaceFolders
+    // notif::Workspace_DidCreateFiles
+    // notif::Workspace_DidDeleteFiles
+    // notif::Workspace_DidRenameFiles
 
-    message_handler_.add<reqst::TextDocument_SemanticTokens_Range>([this](lsp::SemanticTokensRangeParams&& params) -> reqst::TextDocument_SemanticTokens_Range::Result {
-        Timer _("TextDocument_SemanticTokens_Range");
-        std::string file(params.textDocument.uri.path());
-        log::info("\n[LSP] <<< TextDocument SemanticTokens_Range {}:{}:{} to {}:{}", 
-                 file,
-                 params.range.start.line + 1, params.range.start.character + 1,
-                 params.range.end.line + 1, params.range.end.character + 1);
-        // semantic tokens are not allowed to trigger recompile as this is called right after document changed
-        bool already_compiled = compile && compile->locator.data(file);
-        if(!already_compiled) return nullptr;
-        // ensure_compile(file);
-        auto tokens = tokens::collect(
-            compile->name_map, std::string(params.textDocument.uri.path()), 
-            params.range.start.line + 1, 
-            params.range.end.line + 1);
-        
-        log::info("[LSP] >>> Returning {} semantic tokens", tokens.data.size());
-        return tokens;
-    });
+    // req::CallHierarchy_IncomingCalls
+    // req::CallHierarchy_OutgoingCalls
+    // req::Client_RegisterCapability
+    // req::Client_UnregisterCapability
+    // req::CodeAction_Resolve
+    // req::CodeLens_Resolve
+    // req::CompletionItem_Resolve
+    // req::DocumentLink_Resolve
+    // req::InlayHint_Resolve
+    // req::TextDocument_CodeAction
+    // req::TextDocument_CodeLens
+    // req::TextDocument_ColorPresentation
+    // req::TextDocument_Completion
+    // req::TextDocument_Declaration
+    
 
+    // req::TextDocument_Diagnostic
+    // req::TextDocument_DocumentColor
+    // req::TextDocument_DocumentHighlight
+    // req::TextDocument_DocumentLink
+    // req::TextDocument_DocumentSymbol
+    // req::TextDocument_FoldingRange
+    // req::TextDocument_Formatting
+    // req::TextDocument_Hover
+    // req::TextDocument_Implementation
+    // req::TextDocument_InlayHint
     // req::TextDocument_InlineCompletion
     // req::TextDocument_InlineValue
     // req::TextDocument_LinkedEditingRange

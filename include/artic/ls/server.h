@@ -24,7 +24,19 @@ public:
 
     /// Start the LSP server main loop
     int run();
-    void setup_events();
+    void setup_events() {
+        setup_events_initialization();
+        setup_events_modifications();
+        setup_events_tokens();
+        setup_events_definitions();
+        setup_events_other();
+    }
+    void setup_events_initialization();
+    void setup_events_modifications();
+    void setup_events_tokens();
+    void setup_events_definitions();
+    void setup_events_other();
+
     void send_message(const std::string& message, lsp::MessageType type);
     void compile_files(std::span<const workspace::File*> files);
     void compile_file(const std::filesystem::path& file);
