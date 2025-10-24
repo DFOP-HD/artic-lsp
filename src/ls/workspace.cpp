@@ -32,8 +32,8 @@ static std::optional<std::string> read_file(const std::string& file) {
 }
 
 void File::read() const {
-    // if (!text) // could do that to avoid re-reading, but force re-reading does not take too long so do it just to be sure
-    text = read_file(path);
+    if (!text) // could do that to avoid re-reading, but force re-reading does not take too long so do it just to be sure
+        text = read_file(path);
     if (!text) log::error("Could not read file {}", path);
 }
 

@@ -13,6 +13,7 @@ struct Loc {
     std::shared_ptr<std::string> file;
     struct Pos {
         int row, col;
+        std::strong_ordering operator<=>(const Pos&) const = default;
     } begin, end;
 
     bool operator == (const Loc& loc) const {

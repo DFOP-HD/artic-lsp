@@ -136,12 +136,13 @@ void Server::compile_file(const std::filesystem::path& file) {
         log::info("Compile failed");
     }
 
-    log::Output out(std::clog, false);
-    Printer p(out);
-    p.print_additional_node_info = true;
-    for(auto& [decl, _]: compile->name_map.files[file].references_of) {
-        decl->print(p);
-    }
+    // log::Output out(std::clog, false);
+    // Printer p(out);
+    // p.print_additional_node_info = true;
+    // for(auto& [decl, _]: compile->name_map.files[file].references_of) {
+    //     if(decl->is_top_level)
+    //         decl->print(p);
+    // }
 
     auto convert_diagnostic = [](const Diagnostic& diag) -> lsp::Diagnostic {
         lsp::Diagnostic lsp_diag;
@@ -909,6 +910,10 @@ std::string get_completion_documentation(const ast::NamedDecl* decl) {
     return doc;
 }
 
+
+bool same_file(const Loc& a, const Loc& b) { return a.file && b.file && *a.file == *b.file; }
+bool overlaps(const Loc& a, const Loc& b) { return a.end >= b.begin && a.begin <= b.end; }
+
 void Server::setup_events_completion() {
     message_handler_.add<reqst::TextDocument_Completion>([this](lsp::CompletionParams&& params) -> reqst::TextDocument_Completion::Result {
         log::info("[LSP] <<< TextDocument Completion {}:{}:{}", 
@@ -921,25 +926,86 @@ void Server::setup_events_completion() {
             log::info("[LSP] >>> No compilation available for completion");
             return nullptr;
         }
+        params.position.character--;
+        Loc loc = convert_loc(params.textDocument, params.position);
+        const ast::ProjExpr* proj_expr = nullptr;
+        ast::Node::TraverseFn traverse([&](const ast::Node& node) -> bool {
+            if(!node.loc.file) return true; // super module
+            if(!same_file(loc, node.loc)) return false;
+            log::info("test node at {} vs {}", node.loc, loc);
+            node.dump();
+            if(!overlaps(loc, node.loc)) return false;
+            log::info("Node at {}", node.loc);
+            if(auto proj = node.isa<ast::ProjExpr>()){
+                log::info("found projection expression {}", node.loc);
+                proj_expr = proj;
+                // at end of projection expr
+                if(!overlaps(loc, proj->expr->loc)) {
+                    log::info("not overlapping {}", node.loc);
+                    return false; 
+                }
+            }
+            // if(proj_expr) {
+            //     log::info("continue after proj {}", node.loc);
+            //     if(node.type) node.type->dump(); 
+            //     else log::info("no type");
+            // }
+            return true;
+        });
+
+        traverse(compile->program); 
+        
 
         std::vector<lsp::CompletionItem> items;
 
-        // Collect top-level declarations from the program
-        for (const auto& decl : compile->program->decls) {
-            if (auto named_decl = decl->isa<ast::NamedDecl>()) {
-                lsp::CompletionItem item;
-                item.label = named_decl->id.name;
-                item.detail = get_completion_detail(named_decl);
-                item.kind = get_completion_kind(named_decl);
-                
-                // Add documentation if available
-                if (!named_decl->id.name.empty()) {
-                    item.documentation = get_completion_documentation(named_decl);
+        if(proj_expr){
+            log::info("inside proj expr completion");
+            proj_expr->dump();
+            const Type* type;
+            if(proj_expr->type && !proj_expr->type->isa<TypeError>()) {
+                log::info("using proj expr type");
+                type = proj_expr->type;
+            }
+            else if(proj_expr->expr->type && !proj_expr->expr->type->isa<TypeError>()){
+                log::info("using proj expr expr type");
+                type = proj_expr->expr->type;
+            }
+            if(type){
+                if(auto addr = type->isa<AddrType>(); addr && addr->pointee) { type = addr->pointee; }
+                log::info("has type");
+                type->dump();
+                if(auto struct_type = type->isa<ComplexType>()){
+                    log::info("is complex");
+                    for (int i = 0; i < struct_type->member_count(); i++) {
+                        lsp::CompletionItem item;
+                        item.label = struct_type->member_name(i);
+                        item.detail = "field";
+                        item.kind = lsp::CompletionItemKind::Field;
+                        items.push_back(std::move(item));
+                    }
                 }
+            }
+            
+        } else {
+            // generic context
+            for (const auto& decl : compile->program->decls) {
+                if (auto named_decl = decl->isa<ast::NamedDecl>()) {
+                    lsp::CompletionItem item;
+                    item.label = named_decl->id.name;
+                    item.detail = get_completion_detail(named_decl);
+                    item.kind = get_completion_kind(named_decl);
+                    
+                    // Add documentation if available
+                    if (!named_decl->id.name.empty()) {
+                        item.documentation = get_completion_documentation(named_decl);
+                    }
 
-                items.push_back(std::move(item));
+                    items.push_back(std::move(item));
+                }
             }
         }
+
+        
 
         lsp::CompletionList result;
         result.isIncomplete = false;

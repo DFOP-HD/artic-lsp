@@ -31,17 +31,19 @@ void print_parens(Printer& p, const E& e) {
 struct NodeScope {
     Printer& p;
     std::string name;
+    int indent;
     NodeScope(Printer& p, std::string_view name) : p(p), name(name) {
         if(!p.print_additional_node_info) return;
-        p << p.endl() << p.indent();
-
+        p << p.endl();
+        indent = p.level++;
         p << "<" << name << ">";
-
         p << p.endl();
     }
     ~NodeScope() {
         if(!p.print_additional_node_info) return;
-        p << p.unindent();
+        p.level = indent;
+        p << p.endl();
+        p << "</" << name << ">";
     }
 };
 
@@ -791,7 +793,7 @@ log::Output& operator << (log::Output& out, const Node& node) {
 }
 
 void Node::dump() const {
-    Printer p(log::out);
+    Printer p(log::err);
     p.show_implicit_casts = true;
     print(p);
     p << '\n';
@@ -926,7 +928,7 @@ log::Output& operator << (log::Output& out, const Type& type) {
 }
 
 void Type::dump() const {
-    Printer p(log::out);
+    Printer p(log::err);
     print(p);
     p << '\n';
 }

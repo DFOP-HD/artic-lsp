@@ -1,6 +1,8 @@
 #ifndef ARTIC_AST_H
 #define ARTIC_AST_H
 
+#include <concepts>
+#include <functional>
 #include <memory>
 #include <vector>
 #include <variant>
@@ -77,6 +79,26 @@ struct Node : public Cast<Node> {
     void print_node(Printer&) const;
     /// Prints the node with the given formatting parameters.
     virtual void print(Printer&) const = 0;
+
+    struct TraverseFn {        
+        std::function<bool(const Node&)> eval;
+
+        explicit TraverseFn(std::function<bool(const Node&)> eval) 
+            : eval(eval) 
+        {}
+
+        template<std::derived_from<Node> T>
+        void operator()(const T& n) const { n.traverse(*this); }
+
+        template<std::derived_from<Node> T>
+        void operator()(const Ptr<T>& node) const { if(node) this->operator()(*node); }
+
+        template<std::derived_from<Node> T>
+        void operator()(const PtrVector<T>& nodes) const { for(const auto& node : nodes) this->operator()(node); }
+    };
+
+    void traverse(const TraverseFn& fn) const { if(fn.eval(*this)) traverse_children(fn); }
+    virtual void traverse_children(const TraverseFn& fn) const {}
 
     /// Prints the node on the console, for debugging.
     void dump() const;
@@ -223,6 +245,7 @@ struct Filter : public Node {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(expr); }
 };
 
 // Attributes ----------------------------------------------------------------------
@@ -255,6 +278,7 @@ struct PathAttr : public Attr {
     void check(TypeChecker&, const ast::Node*) override;
     void bind(NameBinder&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(path); }
 };
 
 /// Attribute with an associated literal.
@@ -283,6 +307,7 @@ struct NamedAttr : public Attr {
     void check(TypeChecker&, const ast::Node*) override;
     void bind(NameBinder&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(args); }
 };
 
 /// Attribute list for statement blocks, or function declarations.
@@ -340,6 +365,7 @@ struct TupleType : public Type {
     const artic::Type* infer(TypeChecker&) override;
     void bind(NameBinder&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(args); }
 };
 
 /// Base class for array types.
@@ -351,6 +377,7 @@ struct ArrayType : public Type {
     {}
 
     void bind(NameBinder&) override;
+    void traverse_children(const TraverseFn& fn) const override { fn(elem); }
 };
 
 /// Sized array type.
@@ -365,6 +392,9 @@ struct SizedArrayType : public ArrayType {
     const artic::Type* infer(TypeChecker&) override;
     void bind(NameBinder&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { 
+        if(std::holds_alternative<ast::Path>(size)) fn(std::get<ast::Path>(size)); 
+    }
 };
 
 /// Unsized array type.
@@ -389,6 +419,7 @@ struct FnType : public Type {
     const artic::Type* infer(TypeChecker&) override;
     void bind(NameBinder&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(from); fn(to); }
 };
 
 struct PtrType : public Type {
@@ -403,6 +434,7 @@ struct PtrType : public Type {
     const artic::Type* infer(TypeChecker&) override;
     void bind(NameBinder&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(pointee); }
 };
 
 /// A type application.
@@ -416,6 +448,7 @@ struct TypeApp : public Type {
     const artic::Type* infer(TypeChecker&) override;
     void bind(NameBinder&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(path); }
 };
 
 /// The codomain of functions that don't return anything.
@@ -459,6 +492,7 @@ struct DeclStmt : public Stmt {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(decl); }
 };
 
 // Statement evaluating an expression.
@@ -479,6 +513,7 @@ struct ExprStmt : public Stmt {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(expr); }
 };
 
 // Expressions ---------------------------------------------------------------------
@@ -503,6 +538,7 @@ struct TypedExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(expr); fn(type); }
 };
 
 /// Expression made of a path to an identifier.
@@ -521,6 +557,7 @@ struct PathExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override {};
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(path); }
 };
 
 /// Expression made of a literal.
@@ -557,6 +594,7 @@ struct SummonExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(type_expr); }
 };
 
 /// Field expression, part of a record expression.
@@ -586,6 +624,7 @@ struct FieldExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(expr); }
 };
 
 /// Record-like braced expression containing fields
@@ -627,6 +666,7 @@ struct RecordExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(type); fn(expr); fn(fields); }
 };
 
 /// Expression enclosed by parenthesis and made of several expressions separated by commas.
@@ -647,6 +687,7 @@ struct TupleExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(args); }
 };
 
 /// Array expression.
@@ -668,6 +709,7 @@ struct ArrayExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(elems); }
 };
 
 /// Array expression repeating a given value a given number of times.
@@ -690,6 +732,10 @@ struct RepeatArrayExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { 
+        fn(elem);
+        if(std::holds_alternative<ast::Path>(size)) fn(std::get<ast::Path>(size));
+    }
 };
 
 /// Anonymous function expression.
@@ -721,6 +767,7 @@ struct FnExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(filter); fn(param); fn(ret_type); fn(body); }
 };
 
 /// Block of code, whose result is the last expression in the block.
@@ -741,6 +788,7 @@ struct BlockExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(stmts); }
 };
 
 /// Function or constructor call with a single expression (can be a tuple) for the arguments.
@@ -764,6 +812,7 @@ struct CallExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(callee); fn(arg); }
 };
 
 /// Projection operator (.).
@@ -797,6 +846,7 @@ struct ProjExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(expr); }
 };
 
 /// If/Else expression (the else branch is optional).
@@ -842,6 +892,13 @@ struct IfExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { 
+        fn(ptrn);            
+        fn(expr);        
+        fn(cond);        
+        fn(if_true);        
+        fn(if_false);        
+    }
 };
 
 /// Case within a match expression.
@@ -861,6 +918,7 @@ struct CaseExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(ptrn); fn(expr); }
 };
 
 /// Match expression.
@@ -883,6 +941,7 @@ struct MatchExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(arg); fn(cases); }
 };
 
 /// Base class for loop expressions (while, for)
@@ -921,6 +980,7 @@ struct WhileExpr : public LoopExpr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(ptrn); fn(expr); fn(cond); fn(body); }
 };
 
 /// For loop expression.
@@ -939,6 +999,7 @@ struct ForExpr : public LoopExpr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(call); }
 };
 
 /// Break expression.
@@ -1023,6 +1084,7 @@ struct UnaryExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(arg); }
 
     bool is_inc() const { return is_inc(tag); }
     bool is_dec() const { return is_dec(tag); }
@@ -1076,6 +1138,7 @@ struct BinaryExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(left); fn(right); }
 
     static Tag remove_eq(Tag);
     static bool has_eq(Tag);
@@ -1110,6 +1173,7 @@ struct FilterExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(filter); fn(expr); }
 };
 
 /// Explicit cast using the `as` operator.
@@ -1133,6 +1197,7 @@ struct CastExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(expr); fn(type); }
 };
 
 /// Implicit cast expression, inserted during type-checking.
@@ -1156,6 +1221,7 @@ struct ImplicitCastExpr : public Expr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(expr); }
 };
 
 /// Inline assembly expression.
@@ -1257,6 +1323,7 @@ struct TypeParamList : public Node {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override {};
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(params); }
 };
 
 /// Pattern binding associated with an identifier.
@@ -1292,6 +1359,7 @@ struct LetDecl : public Decl {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(ptrn); fn(init); }
 };
 
 /// Declaration that introduces an implicit value, or implicit value generator in the scope
@@ -1315,6 +1383,7 @@ struct ImplicitDecl : public Decl {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(type); fn(value); }
 };
 
 /// Static (top-level) declaration.
@@ -1343,6 +1412,7 @@ struct StaticDecl : public ValueDecl {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(type); fn(init); }
 };
 
 /// Function declaration.
@@ -1367,6 +1437,7 @@ struct FnDecl : public ValueDecl {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(this->fn); fn(type_params); }
 };
 
 /// Structure field declaration.
@@ -1388,6 +1459,7 @@ struct FieldDecl : public NamedDecl {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(type); fn(init); }
 };
 
 /// Base class for declarations holding fields.
@@ -1403,6 +1475,7 @@ struct RecordDecl : public CtorDecl {
     {}
 
     void resolve_summons(Summoner&) override;
+    void traverse_children(const TraverseFn& fn) const override { fn(fields); }
 };
 
 /// Structure type declarations.
@@ -1426,6 +1499,7 @@ struct StructDecl : public RecordDecl {
     void bind_head(NameBinder&) override;
     void bind(NameBinder&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(type_params); }
 };
 
 struct EnumDecl;
@@ -1457,6 +1531,7 @@ struct OptionDecl : public RecordDecl {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override {};
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(param); }
 };
 
 /// Enumeration declaration.
@@ -1480,6 +1555,7 @@ struct EnumDecl : public CtorDecl {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override {};
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(type_params); fn(options); }
 };
 
 /// Type alias declaration.
@@ -1503,14 +1579,13 @@ struct TypeDecl : public NamedDecl {
     void bind(NameBinder&) override; 
     void resolve_summons(Summoner&) override {};
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(type_params); fn(aliased_type); }
 };
 
 /// Module definition.
 struct ModDecl : public NamedDecl {
     PtrVector<Decl> decls;
     ModDecl* super = nullptr;
-
-    std::vector<const NamedDecl*> members;
 
     /// Constructor for the implicitly defined global module.
     /// When using this constructor, the user is responsible for calling
@@ -1534,6 +1609,7 @@ struct ModDecl : public NamedDecl {
     void bind(NameBinder&) override;
     void print(Printer&) const override;
     void resolve_summons(Summoner&) override;
+    void traverse_children(const TraverseFn& fn) const override { fn(decls); }
 };
 
 /// Module use, with or without `as`.
@@ -1550,6 +1626,7 @@ struct UseDecl : public NamedDecl {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override {};
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(path); }
 };
 
 /// Incorrect declaration, coming from parsing.
@@ -1581,6 +1658,7 @@ struct TypedPtrn : public Ptrn {
     const Expr* to_expr(Arena&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(ptrn); fn(type); }
 };
 
 /// An identifier used as a pattern.
@@ -1602,6 +1680,7 @@ struct IdPtrn : public Ptrn {
     const Expr* to_expr(Arena&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(decl); fn(sub_ptrn); }
 };
 
 /// A literal used as a pattern.
@@ -1637,6 +1716,7 @@ struct ImplicitParamPtrn : public Ptrn {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(underlying); }
 };
 
 /// A pattern that matches against a structure field.
@@ -1660,6 +1740,7 @@ struct FieldPtrn : public Ptrn {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(ptrn); }
 };
 
 /// A pattern that matches against record-like types with named fields.
@@ -1684,6 +1765,7 @@ struct RecordPtrn : public Ptrn {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(path); fn(fields); }
 };
 
 /// A pattern that matches against constructor invocations.
@@ -1706,6 +1788,7 @@ struct CtorPtrn : public Ptrn {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(path); fn(arg); }
 };
 
 /// A pattern that matches against tuples.
@@ -1725,6 +1808,7 @@ struct TuplePtrn : public Ptrn {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(args); }
 };
 
 /// A pattern that matches arrays of fixed size.
@@ -1745,6 +1829,7 @@ struct ArrayPtrn : public Ptrn {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
+    void traverse_children(const TraverseFn& fn) const override { fn(elems); }
 };
 
 /// A pattern resulting from a parsing error.
