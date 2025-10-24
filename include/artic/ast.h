@@ -73,6 +73,8 @@ struct Node : public Cast<Node> {
     virtual void resolve_summons(Summoner&) = 0;
     /// Emits an IR definition for this node.
     virtual const thorin::Def* emit(Emitter&) const;
+    // Print with addition information
+    void print_node(Printer&) const;
     /// Prints the node with the given formatting parameters.
     virtual void print(Printer&) const = 0;
 

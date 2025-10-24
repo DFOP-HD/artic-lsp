@@ -28,9 +28,27 @@ void print_parens(Printer& p, const E& e) {
 
 // AST nodes -----------------------------------------------------------------------
 
+struct NodeScope {
+    Printer& p;
+    std::string name;
+    NodeScope(Printer& p, std::string_view name) : p(p), name(name) {
+        if(!p.print_additional_node_info) return;
+        p << p.endl() << p.indent();
+
+        p << "<" << name << ">";
+
+        p << p.endl();
+    }
+    ~NodeScope() {
+        if(!p.print_additional_node_info) return;
+        p << p.unindent();
+    }
+};
+
 namespace ast {
 
 void Path::print(Printer& p) const {
+    NodeScope _(p, "Path");
     print_list(p, "::", elems, [&] (auto& e) {
         if (e.is_super())
             p << log::keyword_style(e.id.name);
@@ -47,6 +65,7 @@ void Path::print(Printer& p) const {
 }
 
 void Filter::print(Printer& p) const {
+    NodeScope _(p, "Filter");
     p << '@';
     if (expr) {
         p << '(';
@@ -58,15 +77,18 @@ void Filter::print(Printer& p) const {
 // Attributes ----------------------------------------------------------------------
 
 void PathAttr::print(Printer& p) const {
+    NodeScope _(p, "PathAttr");
     p << name << " = ";
     path.print(p);
 }
 
 void LiteralAttr::print(Printer& p) const {
+    NodeScope _(p, "LiteralAttr");
     p << name << " = " << std::showpoint << log::literal_style(lit);
 }
 
 void NamedAttr::print(Printer& p) const {
+    NodeScope _(p, "NamedAttr");
     p << name;
     if (!args.empty()) {
         p << '(';
@@ -78,6 +100,7 @@ void NamedAttr::print(Printer& p) const {
 }
 
 void AttrList::print(Printer& p) const {
+    NodeScope _(p, "AttrList");
     p << "#[";
     print_list(p, ", ", args, [&] (auto& a) {
         a->print(p);
@@ -88,28 +111,34 @@ void AttrList::print(Printer& p) const {
 // Statements ----------------------------------------------------------------------
 
 void DeclStmt::print(Printer& p) const {
+    NodeScope _(p, "DeclStmt");
     decl->print(p);
 }
 
 void ExprStmt::print(Printer& p) const {
+    NodeScope _(p, "ExprStmt");
     expr->print(p);
 }
 
 void TypedExpr::print(Printer& p) const {
+    NodeScope _(p, "TypedExpr");
     expr->print(p);
     p << ": ";
     type->print(p);
 }
 
 void PathExpr::print(Printer& p) const {
+    NodeScope _(p, "PathExpr");
     path.print(p);
 }
 
 void LiteralExpr::print(Printer& p) const {
+    NodeScope _(p, "LiteralExpr");
     p << std::showpoint << log::literal_style(lit);
 }
 
 void SummonExpr::print(Printer& p) const {
+    NodeScope _(p, "SummonExpr");
     if (resolved) {
         resolved->print(p);
         return;
@@ -121,11 +150,13 @@ void SummonExpr::print(Printer& p) const {
 }
 
 void FieldExpr::print(Printer& p) const {
+    NodeScope _(p, "FieldExpr");
     p << id.name << " = ";
     expr->print(p);
 }
 
 void RecordExpr::print(Printer& p) const {
+    NodeScope _(p, "RecordExpr");
     if (expr) {
         expr->print(p);
         p << " .";
@@ -143,6 +174,7 @@ void RecordExpr::print(Printer& p) const {
 }
 
 void TupleExpr::print(Printer& p) const {
+    NodeScope _(p, "TupleExpr");
     p << '(';
     print_list(p, ", ", args, [&] (auto& a) {
         a->print(p);
@@ -151,6 +183,7 @@ void TupleExpr::print(Printer& p) const {
 }
 
 void ArrayExpr::print(Printer& p) const {
+    NodeScope _(p, "ArrayExpr");
     if (is_simd)
         p << log::keyword_style("simd");
     p << '[';
@@ -161,6 +194,7 @@ void ArrayExpr::print(Printer& p) const {
 }
 
 void RepeatArrayExpr::print(Printer& p) const {
+    NodeScope _(p, "RepeatArrayExpr");
     if (is_simd)
         p << log::keyword_style("simd");
     p << '[';
@@ -177,6 +211,7 @@ void RepeatArrayExpr::print(Printer& p) const {
 }
 
 void FnExpr::print(Printer& p) const {
+    NodeScope _(p, "FnExpr");
     if (filter)
         filter->print(p);
     p << '|';
@@ -197,6 +232,7 @@ void FnExpr::print(Printer& p) const {
 }
 
 void BlockExpr::print(Printer& p) const {
+    NodeScope _(p, "BlockExpr");
     if (stmts.empty())
         p << "{}";
     else {
@@ -213,6 +249,7 @@ void BlockExpr::print(Printer& p) const {
 }
 
 void CallExpr::print(Printer& p) const {
+    NodeScope _(p, "CallExpr");
     if (callee->isa<FnExpr>())
         print_parens(p, callee);
     else
@@ -221,6 +258,7 @@ void CallExpr::print(Printer& p) const {
 }
 
 void ProjExpr::print(Printer& p) const {
+    NodeScope _(p, "ProjExpr");
     expr->print(p);
     p << '.';
     std::visit([&] (auto&& arg) {
@@ -233,6 +271,7 @@ void ProjExpr::print(Printer& p) const {
 }
 
 void IfExpr::print(Printer& p) const {
+    NodeScope _(p, "IfExpr");
     p << log::keyword_style("if") << ' ';
     if (cond)
         cond->print(p);
@@ -251,12 +290,14 @@ void IfExpr::print(Printer& p) const {
 }
 
 void CaseExpr::print(Printer& p) const {
+    NodeScope _(p, "CaseExpr");
     ptrn->print(p);
     p << " => ";
     expr->print(p);
 }
 
 void MatchExpr::print(Printer& p) const {
+    NodeScope _(p, "MatchExpr");
     p << log::keyword_style("match") << ' ';
     arg->print(p);
     p << " {" << p.indent();
@@ -270,6 +311,7 @@ void MatchExpr::print(Printer& p) const {
 }
 
 void WhileExpr::print(Printer& p) const {
+    NodeScope _(p, "WhileExpr");
     p << log::keyword_style("while") << ' ';
     if (cond)
         cond->print(p);
@@ -284,6 +326,7 @@ void WhileExpr::print(Printer& p) const {
 }
 
 void ForExpr::print(Printer& p) const {
+    NodeScope _(p, "ForExpr");
     auto& iter = call->callee->as<ast::CallExpr>()->callee;
     auto lambda = call->callee->as<ast::CallExpr>()->arg->as<ast::FnExpr>();
     p << log::keyword_style("for") << ' ';
@@ -296,18 +339,22 @@ void ForExpr::print(Printer& p) const {
 }
 
 void BreakExpr::print(Printer& p) const {
+    NodeScope _(p, "BreakExpr");
     p << log::keyword_style("break");
 }
 
 void ContinueExpr::print(Printer& p) const {
+    NodeScope _(p, "ContinueExpr");
     p << log::keyword_style("continue");
 }
 
 void ReturnExpr::print(Printer& p) const {
+    NodeScope _(p, "ReturnExpr");
     p << log::keyword_style("return");
 }
 
 void UnaryExpr::print(Printer& p) const {
+    NodeScope _(p, "UnaryExpr");
     if (is_prefix()) {
         p << tag_to_string(tag);
         if (tag == AddrOfMut)
@@ -321,6 +368,7 @@ void UnaryExpr::print(Printer& p) const {
 }
 
 void BinaryExpr::print(Printer& p) const {
+    NodeScope _(p, "BinaryExpr");
     auto prec = BinaryExpr::precedence(tag);
     auto print_op = [prec, &p] (const Ptr<Expr>& e, bool is_right) {
         bool needs_parens = e->isa<IfExpr>() || e->isa<MatchExpr>();
@@ -340,11 +388,13 @@ void BinaryExpr::print(Printer& p) const {
 }
 
 void FilterExpr::print(Printer& p) const {
+    NodeScope _(p, "FilterExpr");
     filter->print(p);
     expr->print(p);
 }
 
 void CastExpr::print(Printer& p) const {
+    NodeScope _(p, "CastExpr");
     if (expr->isa<BinaryExpr>())
         print_parens(p, expr);
     else
@@ -354,6 +404,7 @@ void CastExpr::print(Printer& p) const {
 }
 
 void ImplicitCastExpr::print(Printer& p) const {
+    NodeScope _(p, "ImplicitCastExpr");
     if (p.show_implicit_casts)
         p << "/* implicit cast to '" << *type << "' ( */";
     expr->print(p);
@@ -362,6 +413,7 @@ void ImplicitCastExpr::print(Printer& p) const {
 }
 
 void AsmExpr::print(Printer& p) const {
+    NodeScope _(p, "AsmExpr");
     p << log::keyword_style("asm") << '(' << p.indent() << p.endl()
       << '\"' << src << '\"' << p.endl();
     auto print_constr = [&] (auto& constr) {
@@ -383,10 +435,12 @@ void AsmExpr::print(Printer& p) const {
 }
 
 void ErrorExpr::print(Printer& p) const {
+    NodeScope _(p, "ErrorExpr");
     p << log::error_style("<invalid expression>");
 }
 
 void TypedPtrn::print(Printer& p) const {
+    NodeScope _(p, "TypedPtrn");
     if (ptrn) {
         ptrn->print(p);
         p << ": ";
@@ -395,6 +449,7 @@ void TypedPtrn::print(Printer& p) const {
 }
 
 void IdPtrn::print(Printer& p) const {
+    NodeScope _(p, "IdPtrn");
     decl->print(p);
     if (sub_ptrn) {
         p << ' ' << log::keyword_style("as") << ' ';
@@ -403,15 +458,18 @@ void IdPtrn::print(Printer& p) const {
 }
 
 void LiteralPtrn::print(Printer& p) const {
+    NodeScope _(p, "LiteralPtrn");
     p << std::showpoint << log::literal_style(lit);
 }
 
 void ImplicitParamPtrn::print(Printer& p) const {
+    NodeScope _(p, "ImplicitParamPtrn");
     p << log::keyword_style("implicit") << ' ';
     underlying->print(p);
 }
 
 void FieldPtrn::print(Printer& p) const {
+    NodeScope _(p, "FieldPtrn");
     if (is_etc()) {
         p << "...";
     } else {
@@ -421,6 +479,7 @@ void FieldPtrn::print(Printer& p) const {
 }
 
 void RecordPtrn::print(Printer& p) const {
+    NodeScope _(p, "RecordPtrn");
     path.print(p);
     p << " {";
     if (!fields.empty()) {
@@ -434,11 +493,13 @@ void RecordPtrn::print(Printer& p) const {
 }
 
 void CtorPtrn::print(Printer& p) const {
+    NodeScope _(p, "CtorPtrn");
     path.print(p);
     if (arg) print_parens(p, arg);
 }
 
 void TuplePtrn::print(Printer& p) const {
+    NodeScope _(p, "TuplePtrn");
     p << '(';
     print_list(p, ", ", args, [&] (auto& arg) {
         arg->print(p);
@@ -447,6 +508,7 @@ void TuplePtrn::print(Printer& p) const {
 }
 
 void ArrayPtrn::print(Printer& p) const {
+    NodeScope _(p, "ArrayPtrn");
     if (is_simd)
         p << log::keyword_style("simd");
     p << '[';
@@ -457,14 +519,17 @@ void ArrayPtrn::print(Printer& p) const {
 }
 
 void ErrorPtrn::print(Printer& p) const {
+    NodeScope _(p, "ErrorPtrn");
     p << log::error_style("<invalid pattern>");
 }
 
 void TypeParam::print(Printer& p) const {
+    NodeScope _(p, "TypeParam");
     p << id.name;
 }
 
 void TypeParamList::print(Printer& p) const {
+    NodeScope _(p, "TypeParamList");
     if (!params.empty()) {
         p << '[';
         print_list(p, ", ", params, [&] (auto& param) {
@@ -475,11 +540,13 @@ void TypeParamList::print(Printer& p) const {
 }
 
 void PtrnDecl::print(Printer& p) const {
+    NodeScope _(p, "PtrnDecl");
     if (is_mut) p << log::keyword_style("mut") << ' ';
     p << id.name;
 }
 
 void LetDecl::print(Printer& p) const {
+    NodeScope _(p, "LetDecl");
     if (attrs) attrs->print(p);
     p << log::keyword_style("let") << ' ';
     ptrn->print(p);
@@ -491,6 +558,7 @@ void LetDecl::print(Printer& p) const {
 }
 
 void ImplicitDecl::print(Printer& p) const {
+    NodeScope _(p, "ImplicitDecl");
     p << log::keyword_style("implicit");
     if (type) {
         p << ' ';
@@ -502,6 +570,7 @@ void ImplicitDecl::print(Printer& p) const {
 }
 
 void StaticDecl::print(Printer& p) const {
+    NodeScope _(p, "StaticDecl");
     if (attrs) attrs->print(p);
     p << log::keyword_style("static") << ' ';
     if (is_mut)
@@ -519,6 +588,7 @@ void StaticDecl::print(Printer& p) const {
 }
 
 void FnDecl::print(Printer& p) const {
+    NodeScope _(p, "FnDecl");
     if (attrs) attrs->print(p);
     p << log::keyword_style("fn") << ' ';
     if (fn->filter)
@@ -546,6 +616,7 @@ void FnDecl::print(Printer& p) const {
 }
 
 void FieldDecl::print(Printer& p) const {
+    NodeScope _(p, "FieldDecl");
     if (!id.name.empty())
         p << id.name << ": ";
     type->print(p);
@@ -572,6 +643,7 @@ inline void print_fields(Printer& p, const PtrVector<FieldDecl>& fields, bool is
 }
 
 void StructDecl::print(Printer& p) const {
+    NodeScope _(p, "StructDecl");
     if (attrs) attrs->print(p);
     p << log::keyword_style("struct") << ' ' << id.name;
     if (type_params) type_params->print(p);
@@ -582,6 +654,7 @@ void StructDecl::print(Printer& p) const {
 }
 
 void OptionDecl::print(Printer& p) const {
+    NodeScope _(p, "OptionDecl");
     p << id.name;
     if (param)
         print_parens(p, param);
@@ -590,6 +663,7 @@ void OptionDecl::print(Printer& p) const {
 }
 
 void EnumDecl::print(Printer& p) const {
+    NodeScope _(p, "EnumDecl");
     if (attrs) attrs->print(p);
     p << log::keyword_style("enum") << ' ' << id.name;
     if (type_params) type_params->print(p);
@@ -606,6 +680,7 @@ void EnumDecl::print(Printer& p) const {
 }
 
 void TypeDecl::print(Printer& p) const {
+    NodeScope _(p, "TypeDecl");
     if (attrs) attrs->print(p);
     p << log::keyword_style("type") << ' ' <<  id.name;
     if (type_params) type_params->print(p);
@@ -615,6 +690,7 @@ void TypeDecl::print(Printer& p) const {
 }
 
 void ModDecl::print(Printer& p) const {
+    NodeScope _(p, "ModDecl");
     if (attrs) attrs->print(p);
     bool anon = id.name == "";
     if (!anon)
@@ -627,6 +703,7 @@ void ModDecl::print(Printer& p) const {
 }
 
 void UseDecl::print(Printer& p) const {
+    NodeScope _(p, "UseDecl");
     p << log::keyword_style("use") << ' ';
     path.print(p);
     if (id.name != "")
@@ -635,6 +712,7 @@ void UseDecl::print(Printer& p) const {
 }
 
 void ErrorDecl::print(Printer& p) const {
+    NodeScope _(p, "ErrorDecl");
     p << log::error_style("<invalid declaration>");
 }
 
@@ -693,10 +771,12 @@ void PtrType::print(Printer& p) const {
 }
 
 void TypeApp::print(Printer& p) const {
+    NodeScope _(p, "TypeApp");
     path.print(p);
 }
 
 void NoCodomType::print(artic::Printer& p) const {
+    NodeScope _(p, "artic");
     p << "!";
 }
 
@@ -768,6 +848,7 @@ void RefType::print(Printer& p) const {
 }
 
 void ImplicitParamType::print(artic::Printer& p) const {
+    NodeScope _(p, "artic");
     p << "implicit ";
     underlying->print(p);
 }
@@ -794,10 +875,12 @@ void NoRetType::print(Printer& p) const {
 }
 
 void TypeError::print(Printer& p) const {
+    NodeScope _(p, "TypeError");
     p << log::error_style("<invalid type>");
 }
 
 void TypeVar::print(Printer& p) const {
+    NodeScope _(p, "TypeVar");
     p << decl.id.name;
 }
 
@@ -822,10 +905,12 @@ void ModType::print(Printer& p) const {
 }
 
 void TypeAlias::print(Printer& p) const {
+    NodeScope _(p, "TypeAlias");
     p << decl.id.name;
 }
 
 void TypeApp::print(Printer& p) const {
+    NodeScope _(p, "TypeApp");
     applied->print(p);
     p << '[';
     print_list(p, ", ", type_args, [&] (auto& a) {

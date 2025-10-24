@@ -26,6 +26,7 @@ struct Printer {
     std::string tab;    ///< String used as tabulation symbol
 
     bool show_implicit_casts = false;
+    bool print_additional_node_info = false;
 
     Printer(log::Output& out, const std::string& tab = "    ")
         : out(out), tab(tab)

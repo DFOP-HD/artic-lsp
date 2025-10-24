@@ -136,6 +136,13 @@ void Server::compile_file(const std::filesystem::path& file) {
         log::info("Compile failed");
     }
 
+    log::Output out(std::clog, false);
+    Printer p(out);
+    p.print_additional_node_info = true;
+    for(auto& [decl, _]: compile->name_map.files[file].references_of) {
+        decl->print(p);
+    }
+
     auto convert_diagnostic = [](const Diagnostic& diag) -> lsp::Diagnostic {
         lsp::Diagnostic lsp_diag;
         lsp_diag.message = diag.message;
