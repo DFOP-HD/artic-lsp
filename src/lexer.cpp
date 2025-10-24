@@ -209,7 +209,9 @@ Token Lexer::next() {
 
         append();
         error(loc_, "unknown token '{}'", str_);
-        return Token(loc_);
+        // Note TG: continue instead of returning error token to improve error tolerance
+        continue; 
+        // return Token(loc_);
     }
 }
 
