@@ -60,7 +60,7 @@ public:
         push_scope(true);
     }
 
-    ~NameBinder() { pop_scope(); }
+    ~NameBinder() { pop_scope(nullptr); }
 
     ls::NameMap* name_map;
 
@@ -78,7 +78,7 @@ public:
     void bind(ast::Node&);
 
     void push_scope(bool top_level = false) { scopes_.emplace_back(top_level); }
-    void pop_scope(bool warn_on_unused_identifiers = true);
+    void pop_scope(ast::Node* current_node);
     void insert_symbol(ast::NamedDecl&, const std::string&);
     void insert_symbol(ast::NamedDecl& decl) {
         insert_symbol(decl, decl.id.name);

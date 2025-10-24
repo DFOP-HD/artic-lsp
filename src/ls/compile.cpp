@@ -84,12 +84,11 @@ void Compiler::compile_files(std::span<const workspace::File*> files) {
         log::error("Parsing failed");
     }
 
-    Summoner summoner(log, arena);
-
-    if (!name_binder.run(*program))
-        ;// return;
+    (void)name_binder.run(*program);
     if(!type_checker.run(*program))
         return;
+    
+    Summoner summoner(log, arena);
     if(!summoner.run(*program))
         return;
 }

@@ -10,39 +10,39 @@ namespace ls {
 bool contains(const Loc& loc, const Loc& cursor, bool multiline_check){
     if (loc.begin.row == loc.end.row) multiline_check = false;
     if (multiline_check) {
-        if(cursor.begin.row < loc.begin.row || cursor.end.row > loc.end.row) return false;
+        if (cursor.begin.row < loc.begin.row || cursor.end.row > loc.end.row) return false;
         return true;
     } else {
-        if(cursor.begin.row != loc.begin.row || cursor.begin.col < loc.begin.col) return false;
-        if(cursor.end.row   != loc.end.row   || cursor.end.col > loc.end.col) return false;
+        if (cursor.begin.row != loc.begin.row || cursor.begin.col < loc.begin.col) return false;
+        if (cursor.end.row   != loc.end.row   || cursor.end.col > loc.end.col) return false;
         return true;
     }
 }
 using Ref = NameMap::Ref;
 using Decl = NameMap::Decl;
 void NameMap::add_type_hint(const ast::Node& node) {
-    if(!node.loc.file) return;
+    if (!node.loc.file) return;
     files[*node.loc.file].with_type_hint.push_back(&node);
 }
 
 void NameMap::insert(Decl decl, Ref ref) {
-    if(!decl || !decl->id.loc.file) return;
-    if(std::visit([](auto&& ref) { return ref == nullptr; }, ref)) return;
+    if (!decl || !decl->id.loc.file) return;
+    if (std::visit([](auto&& ref) { return ref == nullptr; }, ref)) return;
 
     files[*get_identifier(ref).loc.file].declaration_of[ref] = decl;
     files[*decl->id.loc.file].references_of[decl].push_back(ref);
 }
 
 void NameMap::insert(Decl decl) {
-    if(!decl || !decl->id.loc.file) return;
+    if (!decl || !decl->id.loc.file) return;
     files[*decl->id.loc.file].references_of.emplace(decl, std::vector<Ref>{});
 }
 
 const std::vector<Ref>& NameMap::find_refs(Decl decl) const{
     static const std::vector<Ref> empty;
     if (!decl) return empty;
-    if(auto names = files.find(*decl->loc.file); names != files.end()) {
-        if(auto def = names->second.references_of.find(decl); def != names->second.references_of.end()) {
+    if (auto names = files.find(*decl->loc.file); names != files.end()) {
+        if (auto def = names->second.references_of.find(decl); def != names->second.references_of.end()) {
             return def->second;
         }
     }
@@ -51,8 +51,8 @@ const std::vector<Ref>& NameMap::find_refs(Decl decl) const{
 
 Decl NameMap::find_decl(Ref ref) const {
     auto id = get_identifier(ref);
-    if(auto names = files.find(*id.loc.file); names != files.end()) {
-        if(auto def = names->second.declaration_of.find(ref); def != names->second.declaration_of.end()){
+    if (auto names = files.find(*id.loc.file); names != files.end()) {
+        if (auto def = names->second.declaration_of.find(ref); def != names->second.declaration_of.end()){
             return def->second;
         }
     }
@@ -60,23 +60,23 @@ Decl NameMap::find_decl(Ref ref) const {
 }
 
 Decl NameMap::find_decl_at(const Loc& loc) const {
-    if(!loc.file) return nullptr;
+    if (!loc.file) return nullptr;
     auto file = files.find(*loc.file);
-    if(file == files.end()) return nullptr;
+    if (file == files.end()) return nullptr;
     for (auto& [def, ref] : file->second.references_of) {
         // Note: Does duplicate checks as this is a multi map. However, the check should be fast enough
-        if(contains(def->id.loc, loc, false)) return def;
+        if (contains(def->id.loc, loc, false)) return def;
     }
     return nullptr;
 }
 
 std::optional<Ref> NameMap::find_ref_at(const Loc& loc) const {
-    if(!loc.file) return std::nullopt;
+    if (!loc.file) return std::nullopt;
     auto file = files.find(*loc.file);
-    if(file == files.end()) return std::nullopt;
+    if (file == files.end()) return std::nullopt;
     for (auto& [ref, decl] : file->second.declaration_of) {
         auto id = get_identifier(ref);
-        if(contains(id.loc, loc, false)) return ref;
+        if (contains(id.loc, loc, false)) return ref;
     }
     return std::nullopt;
 }
@@ -84,14 +84,14 @@ std::optional<Ref> NameMap::find_ref_at(const Loc& loc) const {
 const ast::Identifier& NameMap::get_identifier(Ref ref) const {
     return std::visit([](auto&& ref) -> const ast::Identifier& {
         using T = std::decay_t<decltype(ref)>;
-        if constexpr (std::is_same_v<T, const ast::Identifier*>) 
+        if constexpr (std::is_same_v<T, const ast::Identifier*>)
             return *ref;
-        if constexpr (std::is_same_v<T, const ast::Path*>) 
+        if constexpr (std::is_same_v<T, const ast::Path*>)
             return ref->elems.front().id;
-        else if constexpr (std::is_same_v<T, const ast::Path::Elem*>) 
+        else if constexpr (std::is_same_v<T, const ast::Path::Elem*>)
             return ref->id;
         else if constexpr (std::is_same_v<T, const ast::ProjExpr*>) {
-            if (std::holds_alternative<ast::Identifier>(ref->field)) 
+            if (std::holds_alternative<ast::Identifier>(ref->field))
                 return std::get<ast::Identifier>(ref->field);
             else
                 assert(false && "tuple indices are not supported for go-to-definition");
@@ -118,16 +118,23 @@ void NameBinder::bind(ast::Node& node) {
     node.bind(*this);
 }
 
-void NameBinder::pop_scope(bool warn_on_unused_identifiers) {
-    for (auto& pair : scopes_.back().symbols) {
-        auto decl = pair.second.decl;
-        if (warn_on_unused_identifiers &&
-            pair.second.use_count == 0 &&
-            !scopes_.back().top_level &&
-            !decl->isa<ast::FieldDecl>() &&
-            !decl->isa<ast::OptionDecl>()) {
-            warn(decl->loc, "unused identifier '{}'", pair.first);
-            note("prefix unused identifiers with '_'");
+void NameBinder::pop_scope(ast::Node* current_node) {
+    bool is_function_without_body = false;
+    if (current_node)
+        if (auto fn = current_node->isa<ast::FnDecl>(); !fn || !fn->fn->body)
+            is_function_without_body = true;
+
+
+    if (!is_function_without_body) {
+        for (auto& pair : scopes_.back().symbols) {
+            auto decl = pair.second.decl;
+            if (pair.second.use_count == 0 &&
+                !scopes_.back().top_level &&
+                !decl->isa<ast::FieldDecl>() &&
+                !decl->isa<ast::OptionDecl>()) {
+                warn(decl->loc, "unused identifier '{}'", pair.first);
+                note("prefix unused identifiers with '_'");
+            }
         }
     }
     scopes_.pop_back();
@@ -135,7 +142,7 @@ void NameBinder::pop_scope(bool warn_on_unused_identifiers) {
 
 void NameBinder::insert_symbol(ast::NamedDecl& decl, const std::string& name) {
     assert(!scopes_.empty());
-    if(name.empty()) return; // can happen if there was a parse error
+    if (name.empty()) return; // can happen if there was a parse error
 
     // Do not bind anonymous variables
     if (name[0] != '_') {
@@ -149,10 +156,10 @@ void NameBinder::insert_symbol(ast::NamedDecl& decl, const std::string& name) {
             decl.isa<ast::PtrnDecl>() && !shadow_symbol->decl->is_top_level) {
             warn(decl.loc, "declaration shadows identifier '{}'", name);
             note(shadow_symbol->decl->loc, "previously declared here");
-        } 
+        }
     }
 
-    if(name_map) name_map->insert(&decl);
+    if (name_map) name_map->insert(&decl);
 }
 
 namespace ast {
@@ -176,10 +183,9 @@ void Path::bind(NameBinder& binder) {
                 binder.note("did you mean '{}'?", similar->decl->id.name);
         } else {
             start_decl = symbol->decl;
-            if(binder.name_map) binder.name_map->insert(start_decl, &first.id);
+            if (binder.name_map) binder.name_map->insert(start_decl, &first.id);
         }
     }
-    
 
     // Bind the type arguments of each element
     for (auto& elem : elems) {
@@ -309,8 +315,8 @@ void FnExpr::bind(NameBinder& binder, bool in_for_loop) {
     if (!in_for_loop) binder.cur_fn = this;
     binder.bind(*body);
     binder.cur_fn = old_fn;
-    binder.pop_scope();
-    binder.pop_scope();
+    binder.pop_scope(this);
+    binder.pop_scope(this);
 }
 
 void FnExpr::bind(NameBinder& binder) {
@@ -324,7 +330,7 @@ void BlockExpr::bind(NameBinder& binder) {
             binder.bind_head(*decl_stmt->decl);
     }
     for (auto& stmt : stmts) binder.bind(*stmt);
-    binder.pop_scope();
+    binder.pop_scope(this);
 }
 
 void CallExpr::bind(NameBinder& binder) {
@@ -355,7 +361,7 @@ void IfExpr::bind(NameBinder& binder) {
         binder.bind(*expr);
     }
     binder.bind(*if_true);
-    binder.pop_scope();
+    binder.pop_scope(this);
     if (if_false) binder.bind(*if_false);
 }
 
@@ -363,7 +369,7 @@ void CaseExpr::bind(NameBinder& binder) {
     binder.push_scope();
     binder.bind(*ptrn);
     binder.bind(*expr);
-    binder.pop_scope();
+    binder.pop_scope(this);
 }
 
 void MatchExpr::bind(NameBinder& binder) {
@@ -384,7 +390,7 @@ void WhileExpr::bind(NameBinder& binder) {
     binder.cur_loop = this;
     binder.bind(*body);
     binder.cur_loop = old_loop;
-    binder.pop_scope();
+    binder.pop_scope(this);
 }
 
 void ForExpr::bind(NameBinder& binder) {
@@ -513,7 +519,7 @@ void StaticDecl::bind_head(NameBinder& binder) {
     if (pre_symbol) {
         auto pre_decl = pre_symbol->decl;
 
-        if(!pre_decl->isa<StaticDecl>()) {
+        if (!pre_decl->isa<StaticDecl>()) {
             binder.error(loc, "identifier '{}' already declared", this->id.name);
             binder.note(pre_decl->loc, "previously declared here");
             return;
@@ -521,7 +527,7 @@ void StaticDecl::bind_head(NameBinder& binder) {
         auto pre_static = pre_decl->as<StaticDecl>();
 
         if (init) {
-            if(pre_static->init) {
+            if (pre_static->init) {
                 binder.error(loc, "overwriting init of '{}'", this->id.name);
                 binder.note(pre_decl->loc, "previously declared here");
             }
@@ -570,15 +576,14 @@ void FnDecl::bind(NameBinder& binder) {
         if (fn->ret_type)
             binder.bind(*fn->ret_type);
     }
-    bool warn_on_unused_identifiers = fn->body;
-    binder.pop_scope(warn_on_unused_identifiers);
+    binder.pop_scope(this);
 }
 
 void FieldDecl::bind(NameBinder& binder) {
     binder.bind(*type);
     if (init)
         binder.bind(*init);
-    if(binder.name_map) binder.name_map->insert(this);
+    if (binder.name_map) binder.name_map->insert(this);
 }
 
 void StructDecl::bind_head(NameBinder& binder) {
@@ -589,7 +594,7 @@ void StructDecl::bind(NameBinder& binder) {
     binder.push_scope();
     if (type_params) binder.bind(*type_params);
     for (auto& field : fields) binder.bind(*field);
-    binder.pop_scope();
+    binder.pop_scope(this);
 }
 
 void OptionDecl::bind(NameBinder& binder) {
@@ -612,7 +617,7 @@ void EnumDecl::bind(NameBinder& binder) {
         option->parent = this;
         binder.bind(*option);
     }
-    binder.pop_scope();
+    binder.pop_scope(this);
 }
 
 void TypeDecl::bind_head(NameBinder& binder) {
@@ -623,7 +628,7 @@ void TypeDecl::bind(NameBinder& binder) {
     binder.push_scope();
     if (type_params) binder.bind(*type_params);
     binder.bind(*aliased_type);
-    binder.pop_scope();
+    binder.pop_scope(this);
 }
 
 void ModDecl::bind_head(NameBinder& binder) {
