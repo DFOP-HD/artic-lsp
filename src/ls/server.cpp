@@ -392,7 +392,7 @@ void Server::setup_events_initialization() {
             .capabilities = lsp::ServerCapabilities{
                 .textDocumentSync = lsp::TextDocumentSyncOptions{
                     .openClose = true,
-                    .change    = lsp::TextDocumentSyncKind::Incremental,
+                    .change    = lsp::TextDocumentSyncKind::Full,
                     .save      = lsp::SaveOptions{ .includeText = false },
                 },
                 .completionProvider = lsp::CompletionOptions{
@@ -478,23 +478,29 @@ void Server::setup_events_modifications() {
     });
     message_handler_.add<notif::TextDocument_DidChange>([this](notif::TextDocument_DidChange::Params&& params) {
         log::info("\n[LSP] <<< TextDocument DidChange");
+        std::filesystem::path file = params.textDocument.uri.path();
+        if(get_file_type(file) == FileType::ConfigFile) {
+            return;
+        }
         // Clear the last compilation result to invalidate stale inlay hints
-        compile.reset();
-        // Optional: clear semantic tokens on change
-        // (void)message_handler_.sendRequest<reqst::Workspace_SemanticTokens_Refresh>();
-        workspace_->mark_file_dirty(params.textDocument.uri.path());
+        // compile.reset();
+        // workspace_->mark_file_dirty(file);
+
+        auto& content = std::get<lsp::TextDocumentContentChangeEvent_Text>(params.contentChanges[0]).text;
+        workspace_->set_file_content(file, std::move(content));
+        compile_file(file);
     });
 
     message_handler_.add<notif::TextDocument_DidSave>([this](notif::TextDocument_DidSave::Params&& params) {
         log::info("\n[LSP] <<< TextDocument DidSave");
-        compile.reset();
-        auto file = params.textDocument.uri.path();
-        if(get_file_type(file) == FileType::ConfigFile) {
-            reload_workspace();
-            return;
-        }
-        compile_file(file);
-        (void)message_handler_.sendRequest<reqst::Workspace_SemanticTokens_Refresh>();
+        // compile.reset();
+        // auto file = params.textDocument.uri.path();
+        // if(get_file_type(file) == FileType::ConfigFile) {
+        //     reload_workspace();
+        //     return;
+        // }
+        // compile_file(file);
+        // (void)message_handler_.sendRequest<reqst::Workspace_SemanticTokens_Refresh>();
     });
 
     // Workspace ----------------------------------------------------------------------
@@ -961,7 +967,7 @@ void Server::setup_events_completion() {
         if(proj_expr){
             log::info("inside proj expr completion");
             proj_expr->dump();
-            const Type* type;
+            const Type* type = nullptr;
             if(proj_expr->type && !proj_expr->type->isa<TypeError>()) {
                 log::info("using proj expr type");
                 type = proj_expr->type;

@@ -55,6 +55,7 @@ public:
     std::optional<std::shared_ptr<Project>> project_for_file(const std::filesystem::path& file) const;
     std::shared_ptr<Project> default_project() const { return projects_.default_project; }
     void mark_file_dirty(const std::filesystem::path& file);
+    void set_file_content(const std::filesystem::path& file, std::string&& content);
     
     ProjectRegistry projects_;
     std::optional<Project::Identifier> active_project;

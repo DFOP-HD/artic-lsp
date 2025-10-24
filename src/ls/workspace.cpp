@@ -92,6 +92,11 @@ void Workspace::mark_file_dirty(const std::filesystem::path& file){
         it->second->text = std::nullopt;
     }
 }
+void Workspace::set_file_content(const std::filesystem::path& file, std::string&& content){
+    if(auto it = projects_.tracked_files.find(file); it != projects_.tracked_files.end()){
+        it->second->text = std::move(content);
+    }
+}
 
 // Project Registry --------------------------------------------------------------------
 
