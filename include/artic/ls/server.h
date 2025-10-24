@@ -30,11 +30,13 @@ public:
         setup_events_tokens();
         setup_events_definitions();
         setup_events_other();
+        setup_events_completion();
     }
     void setup_events_initialization();
     void setup_events_modifications();
     void setup_events_tokens();
     void setup_events_definitions();
+    void setup_events_completion();
     void setup_events_other();
 
     void send_message(const std::string& message, lsp::MessageType type);

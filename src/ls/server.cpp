@@ -644,74 +644,6 @@ lsp::SemanticTokens collect(
     };
 }
 
-// Completion Helper Functions
-std::string get_completion_detail(const ast::NamedDecl* decl) {
-    if (auto fn_decl = decl->isa<ast::FnDecl>()) {
-        return "function";
-    } else if (auto static_decl = decl->isa<ast::StaticDecl>()) {
-        return static_decl->is_mut ? "let mut" : "let";
-    } else if (auto ptrn_decl = decl->isa<ast::PtrnDecl>()) {
-        return ptrn_decl->is_mut ? "parameter mut" : "parameter";
-    } else if (auto struct_decl = decl->isa<ast::StructDecl>()) {
-        return "struct";
-    } else if (auto enum_decl = decl->isa<ast::EnumDecl>()) {
-        return "enum";
-    } else if (auto type_decl = decl->isa<ast::TypeDecl>()) {
-        return "type";
-    } else if (auto field_decl = decl->isa<ast::FieldDecl>()) {
-        return "field";
-    } else if (auto mod_decl = decl->isa<ast::ModDecl>()) {
-        return "module";
-    }
-    return "declaration";
-}
-
-lsp::CompletionItemKind get_completion_kind(const ast::NamedDecl* decl) {
-    if (decl->isa<ast::FnDecl>()) {
-        return lsp::CompletionItemKind::Function;
-    } else if (decl->isa<ast::StaticDecl>()) {
-        return lsp::CompletionItemKind::Variable;
-    } else if (decl->isa<ast::PtrnDecl>()) {
-        return lsp::CompletionItemKind::Variable;
-    } else if (decl->isa<ast::StructDecl>()) {
-        return lsp::CompletionItemKind::Struct;
-    } else if (decl->isa<ast::EnumDecl>()) {
-        return lsp::CompletionItemKind::Enum;
-    } else if (decl->isa<ast::TypeDecl>()) {
-        return lsp::CompletionItemKind::TypeParameter;
-    } else if (decl->isa<ast::FieldDecl>()) {
-        return lsp::CompletionItemKind::Field;
-    } else if (decl->isa<ast::ModDecl>()) {
-        return lsp::CompletionItemKind::Module;
-    }
-    return lsp::CompletionItemKind::Text;
-}
-
-std::string get_completion_documentation(const ast::NamedDecl* decl) {
-    // For now, return basic information about the declaration
-    std::string doc = "**" + decl->id.name + "**\n\n";
-    
-    if (auto fn_decl = decl->isa<ast::FnDecl>()) {
-        doc += "Function declaration";
-        if (fn_decl->fn && fn_decl->fn->param) {
-            doc += "\n\nParameters: ";
-            // Could add parameter information here if needed
-        }
-    } else if (auto static_decl = decl->isa<ast::StaticDecl>()) {
-        doc += static_decl->is_mut ? "Mutable static variable" : "Immutable static variable";
-    } else if (auto struct_decl = decl->isa<ast::StructDecl>()) {
-        doc += "Struct with " + std::to_string(struct_decl->fields.size()) + " fields";
-    } else if (auto enum_decl = decl->isa<ast::EnumDecl>()) {
-        doc += "Enum with " + std::to_string(enum_decl->options.size()) + " options";
-    } else if (auto type_decl = decl->isa<ast::TypeDecl>()) {
-        doc += "Type declaration";
-    } else if (auto mod_decl = decl->isa<ast::ModDecl>()) {
-        doc += "Module with " + std::to_string(mod_decl->decls.size()) + " declarations";
-    }
-    
-    return doc;
-}
-
 void Server::setup_events_tokens() {
     // Semantic Tokens ----------------------------------------------------------------------
     message_handler_.add<reqst::TextDocument_SemanticTokens_Full>([this](lsp::SemanticTokensParams&& params) -> reqst::TextDocument_SemanticTokens_Full::Result {
@@ -899,8 +831,78 @@ void Server::setup_events_definitions() {
 
         return workspace_edit;
     });
+}
 
-    // Completion ----------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
+//
+//
+// Completion
+//
+//
+// -----------------------------------------------------------------------------
+
+
+// Completion Helper Functions
+std::string get_completion_detail(const ast::NamedDecl* decl) {
+    if (auto fn_decl = decl->isa<ast::FnDecl>()) {
+        return "function";
+    } else if (auto static_decl = decl->isa<ast::StaticDecl>()) {
+        return static_decl->is_mut ? "let mut" : "let";
+    } else if (auto ptrn_decl = decl->isa<ast::PtrnDecl>()) {
+        return ptrn_decl->is_mut ? "parameter mut" : "parameter";
+    } else if (auto struct_decl = decl->isa<ast::StructDecl>()) {
+        return "struct";
+    } else if (auto enum_decl = decl->isa<ast::EnumDecl>()) {
+        return "enum";
+    } else if (auto type_decl = decl->isa<ast::TypeDecl>()) {
+        return "type";
+    } else if (auto field_decl = decl->isa<ast::FieldDecl>()) {
+        return "field";
+    } else if (auto mod_decl = decl->isa<ast::ModDecl>()) {
+        return "module";
+    }
+    return "declaration";
+}
+
+lsp::CompletionItemKind get_completion_kind(const ast::NamedDecl* decl) {
+    if (decl->isa<ast::FnDecl>()) return lsp::CompletionItemKind::Function;
+    if (decl->isa<ast::StaticDecl>()) return lsp::CompletionItemKind::Variable;
+    if (decl->isa<ast::PtrnDecl>()) return lsp::CompletionItemKind::Variable;
+    if (decl->isa<ast::StructDecl>()) return lsp::CompletionItemKind::Struct;
+    if (decl->isa<ast::EnumDecl>()) return lsp::CompletionItemKind::Enum;
+    if (decl->isa<ast::TypeDecl>()) return lsp::CompletionItemKind::TypeParameter;
+    if (decl->isa<ast::FieldDecl>()) return lsp::CompletionItemKind::Field;
+    if (decl->isa<ast::ModDecl>()) return lsp::CompletionItemKind::Module;
+    return lsp::CompletionItemKind::Text;
+}
+
+std::string get_completion_documentation(const ast::NamedDecl* decl) {
+    // For now, return basic information about the declaration
+    std::string doc = "**" + decl->id.name + "**\n\n";
+    
+    if (auto fn_decl = decl->isa<ast::FnDecl>()) {
+        doc += "Function declaration";
+        if (fn_decl->fn && fn_decl->fn->param) {
+            doc += "\n\nParameters: ";
+            // Could add parameter information here if needed
+        }
+    } else if (auto static_decl = decl->isa<ast::StaticDecl>()) {
+        doc += static_decl->is_mut ? "Mutable static variable" : "Immutable static variable";
+    } else if (auto struct_decl = decl->isa<ast::StructDecl>()) {
+        doc += "Struct with " + std::to_string(struct_decl->fields.size()) + " fields";
+    } else if (auto enum_decl = decl->isa<ast::EnumDecl>()) {
+        doc += "Enum with " + std::to_string(enum_decl->options.size()) + " options";
+    } else if (auto type_decl = decl->isa<ast::TypeDecl>()) {
+        doc += "Type declaration";
+    } else if (auto mod_decl = decl->isa<ast::ModDecl>()) {
+        doc += "Module with " + std::to_string(mod_decl->decls.size()) + " declarations";
+    }
+    
+    return doc;
+}
+
+void Server::setup_events_completion() {
     message_handler_.add<reqst::TextDocument_Completion>([this](lsp::CompletionParams&& params) -> reqst::TextDocument_Completion::Result {
         log::info("[LSP] <<< TextDocument Completion {}:{}:{}", 
                  params.textDocument.uri.path(), 
@@ -940,7 +942,6 @@ void Server::setup_events_definitions() {
         return result;
     });
 }
-
 
 // -----------------------------------------------------------------------------
 //
