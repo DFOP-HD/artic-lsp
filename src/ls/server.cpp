@@ -935,34 +935,97 @@ void Server::setup_events_completion() {
         params.position.character--;
         Loc loc = convert_loc(params.textDocument, params.position);
         const ast::ProjExpr* proj_expr = nullptr;
+        const ast::PathExpr* path_expr = nullptr;
+
+        std::vector<lsp::CompletionItem> items;
+
+        auto add_decl = [&](const ast::NamedDecl& decl) {
+            if(decl.id.name.empty()) return;
+            if(decl.id.name.starts_with('_')) return;
+            lsp::CompletionItem item;
+            item.label = decl.id.name;
+            item.insertTextFormat = lsp::InsertTextFormat::Snippet;
+
+            if(decl.type) {
+                if (auto fn = decl.isa<ast::FnDecl>()) {
+                    std::stringbuf buf; 
+                    std::ostream str(&buf);
+                    log::Output o(str, false);
+                    int arg = 1;
+                    if(fn->type_params && !fn->type_params->params.empty()) {
+                        o << "[";
+                        for(int i = 0; i < fn->type_params->params.size(); i++) {
+                            if(i > 0) o << ", ";
+                            // o << "${" << arg++ << ":" ;
+                            o << fn->type_params->params[i]->id.name;
+                            // o << "}";
+                        }
+                        o << "]";
+                    }
+                    if(fn->fn->param){
+                        Printer p(o);
+                        if(fn->fn->param->is_tuple()){
+                            o << "(";
+                            auto tuple = fn->fn->param->isa<ast::TuplePtrn>();
+                            for(int i = 0; i < tuple->args.size(); i++) {
+                                if(i > 0) o << ", ";
+                                // o << "${" << arg++ << ":" ;
+                                tuple->args[i]->print(p);
+                                // o << "}";
+                            }
+                            o << ")";
+                        } else {
+                            // o << "${" << arg++ << ":" ;
+                            fn->fn->param->print(p);
+                            // o << "}";
+                        }
+                    } else {
+                        o << "()";
+                    }
+                    item.label += buf.str();
+                } else if (auto fn = decl.type->isa<FnType>()) {
+                    item.label += "()";
+                }
+            }
+                
+            item.detail = get_completion_detail(&decl);
+            item.kind = get_completion_kind(&decl);
+            
+            // Add documentation if available
+            if (!decl.id.name.empty()) {
+                item.documentation = get_completion_documentation(&decl);
+            }
+
+            items.push_back(std::move(item));
+        };
+
         ast::Node::TraverseFn traverse([&](const ast::Node& node) -> bool {
             if(!node.loc.file) return true; // super module
             if(!same_file(loc, node.loc)) return false;
-            log::info("test node at {} vs {}", node.loc, loc);
+            // log::info("test node at {} vs {}", node.loc, loc);
+            if(!overlaps(loc, node.loc)) {
+                return false;
+            }
             node.dump();
-            if(!overlaps(loc, node.loc)) return false;
+
             log::info("Node at {}", node.loc);
             if(auto proj = node.isa<ast::ProjExpr>()){
                 log::info("found projection expression {}", node.loc);
                 proj_expr = proj;
                 // at end of projection expr
                 if(!overlaps(loc, proj->expr->loc)) {
-                    log::info("not overlapping {}", node.loc);
+                    log::info("at end of expression, nice {}", node.loc);
                     return false; 
                 }
+            } else if(auto path = node.isa<ast::PathExpr>()){
+                log::info("found path expression {}", node.loc);
+                path_expr = path;
+                return false;
             }
-            // if(proj_expr) {
-            //     log::info("continue after proj {}", node.loc);
-            //     if(node.type) node.type->dump(); 
-            //     else log::info("no type");
-            // }
             return true;
         });
 
-        traverse(compile->program); 
-        
-
-        std::vector<lsp::CompletionItem> items;
+        traverse(compile->program);
 
         if(proj_expr){
             log::info("inside proj expr completion");
@@ -991,27 +1054,16 @@ void Server::setup_events_completion() {
                     }
                 }
             }
-            
         } else {
             // generic context
             for (const auto& decl : compile->program->decls) {
                 if (auto named_decl = decl->isa<ast::NamedDecl>()) {
-                    lsp::CompletionItem item;
-                    item.label = named_decl->id.name;
-                    item.detail = get_completion_detail(named_decl);
-                    item.kind = get_completion_kind(named_decl);
-                    
-                    // Add documentation if available
-                    if (!named_decl->id.name.empty()) {
-                        item.documentation = get_completion_documentation(named_decl);
-                    }
-
-                    items.push_back(std::move(item));
+                    add_decl(*named_decl);
                 }
             }
         }
 
-        
+        std::reverse(items.begin(), items.end());
 
         lsp::CompletionList result;
         result.isIncomplete = false;
