@@ -10,7 +10,6 @@
 #include "artic/types.h"
 #include "lsp/error.h"
 
-#include <chrono>
 #include <limits>
 #include <lsp/types.h>
 #include <lsp/io/standardio.h>
@@ -663,90 +662,155 @@ lsp::CompletionItemKind get_completion_kind(const ast::NamedDecl* decl) {
     return lsp::CompletionItemKind::Text;
 }
 
-std::string get_completion_documentation(const ast::NamedDecl* decl) {
-    // For now, return basic information about the declaration
-    std::string doc = "**" + decl->id.name + "**\n\n";
-    
-    if (auto fn_decl = decl->isa<ast::FnDecl>()) {
-        doc += "Function declaration";
-        if (fn_decl->fn && fn_decl->fn->param) {
-            doc += "\n\nParameters: ";
-            // Could add parameter information here if needed
-        }
-    } else if (auto static_decl = decl->isa<ast::StaticDecl>()) {
-        doc += static_decl->is_mut ? "Mutable static variable" : "Immutable static variable";
-    } else if (auto struct_decl = decl->isa<ast::StructDecl>()) {
-        doc += "Struct with " + std::to_string(struct_decl->fields.size()) + " fields";
-    } else if (auto enum_decl = decl->isa<ast::EnumDecl>()) {
-        doc += "Enum with " + std::to_string(enum_decl->options.size()) + " options";
-    } else if (auto type_decl = decl->isa<ast::TypeDecl>()) {
-        doc += "Type declaration";
-    } else if (auto mod_decl = decl->isa<ast::ModDecl>()) {
-        doc += "Module with " + std::to_string(mod_decl->decls.size()) + " declarations";
-    }
-    
-    return doc;
-}
-
-
 bool same_file(const Loc& a, const Loc& b) { return a.file && b.file && *a.file == *b.file; }
 bool overlaps(const Loc& a, const Loc& b) { return a.end > /* important > */ b.begin && a.begin <= b.end; }
+
+lsp::CompletionItem completion_item(const ast::FnDecl* fn) {
+    lsp::CompletionItem item;
+    item.insertTextFormat = lsp::InsertTextFormat::Snippet;
+    std::stringbuf lb; 
+    std::ostream str0(&lb);
+    log::Output label(str0, false);
+    Printer l(label);
+
+    label << fn->id.name;
+
+    if (fn->type_params) fn->type_params->print(l);
+    if (auto* param = fn->fn->param.get()) {
+        if (param->is_tuple()) {
+            param->print(l);
+        } else {
+            l << '(';
+            param->print(l);
+            l << ')';
+        }
+    }
+    
+    item.label = lb.str();
+    lb.str("");
+
+    if(const auto* type = fn->type) {
+        if(const auto* forall = fn->type->isa<ForallType>()) type = forall->body;
+        if(type) if(const auto* f = fn->type->isa<FnType>()) {
+            f->codom->print(l);
+            item.detail = lb.str();
+        }
+    }
+    if (!item.detail && fn->fn->ret_type) {
+        fn->fn->ret_type->print(l);
+        item.detail = lb.str();
+    }
+
+    std::stringbuf pt; 
+    std::ostream str1(&pt);
+    log::Output ptrn(str1, false);
+    Printer p(ptrn);
+    int arg = 1;
+    ptrn << fn->id.name;
+    if(fn->type_params && !fn->type_params->params.empty()) {
+        ptrn << "[";
+        for(int i = 0; i < fn->type_params->params.size(); i++) {
+            if(i > 0) ptrn << ", ";
+            ptrn << "${" << arg++ << ":" ;
+            fn->type_params->params[i]->print(p);
+            ptrn << "}";
+        }
+        ptrn << "]";
+    }
+    if(fn->fn->param){
+        ptrn << "(";
+        if(fn->fn->param->is_tuple()){
+            auto tuple = fn->fn->param->isa<ast::TuplePtrn>();
+            for(int i = 0; i < tuple->args.size(); i++) {
+                if(i > 0) ptrn << ", ";
+                ptrn << "${" << arg++ << ":" ;
+                tuple->args[i]->print(p);
+                ptrn << "}";
+            }
+        } else {
+            ptrn << "${" << arg++ << ":" ;
+            fn->fn->param->print(p);
+            ptrn << "}";
+        }
+        ptrn << ")";
+    }
+    ptrn << "$0";
+    item.insertText = pt.str();
+    return item;
+}
 
 std::optional<lsp::CompletionItem> completion_item(const ast::NamedDecl& decl) {
     if(decl.id.name.empty()) return std::nullopt;
     if(decl.id.name.starts_with('_')) return std::nullopt;
+
+    if (auto fn = decl.isa<ast::FnDecl>()) return completion_item(fn);
+
     lsp::CompletionItem item;
-    item.label = decl.id.name;
-    item.insertTextFormat = lsp::InsertTextFormat::Snippet;
+
+    // item.detail = get_completion_detail(&decl);
+    item.kind = get_completion_kind(&decl);
 
     if(decl.type) {
-        if (auto fn = decl.isa<ast::FnDecl>()) {
-            std::stringbuf buf; 
-            std::ostream str(&buf);
-            log::Output o(str, false);
-            int arg = 1;
-            if(fn->type_params && !fn->type_params->params.empty()) {
-                o << "[";
-                for(int i = 0; i < fn->type_params->params.size(); i++) {
-                    if(i > 0) o << ", ";
-                    // o << "${" << arg++ << ":" ;
-                    o << fn->type_params->params[i]->id.name;
-                    // o << "}";
-                }
-                o << "]";
-            }
-            if(fn->fn->param){
-                Printer p(o);
-                if(fn->fn->param->is_tuple()){
-                    o << "(";
-                    auto tuple = fn->fn->param->isa<ast::TuplePtrn>();
-                    for(int i = 0; i < tuple->args.size(); i++) {
-                        if(i > 0) o << ", ";
-                        // o << "${" << arg++ << ":" ;
-                        tuple->args[i]->print(p);
-                        // o << "}";
-                    }
-                    o << ")";
-                } else {
-                    // o << "${" << arg++ << ":" ;
-                    fn->fn->param->print(p);
-                    // o << "}";
-                }
+        if (auto fn = decl.type->isa<FnType>()) {
+            item.kind = lsp::CompletionItemKind::Function;
+
+            std::stringbuf lb; 
+            std::ostream str0(&lb);
+            log::Output label(str0, false);
+            Printer l(label);
+            label << decl.id.name;
+            if (fn->dom && fn->dom->isa<TupleType>()) {
+                fn->dom->print(l);
             } else {
-                o << "()";
+                l << '(';
+                fn->dom->print(l);
+                l << ')';
             }
-            item.label += buf.str();
-        } else if (auto fn = decl.type->isa<FnType>()) {
-            item.label += "()";
+            item.label = lb.str();
+            if(fn->codom) {
+                lb.str("");
+                fn->codom->print(l);
+                item.detail = lb.str();
+            }
+
+            std::stringbuf pt; 
+            std::ostream str1(&pt);
+            log::Output ptrn(str1, false);
+            Printer p(ptrn);
+            int arg = 1;
+            ptrn << decl.id.name << "(";
+            
+            if(fn->dom) {
+                if(const auto* tuple = fn->dom->isa<TupleType>()) {
+                    for(int i = 0; i < tuple->args.size(); i++) {
+                        if(i > 0) ptrn << ", ";
+                        ptrn << "${" << arg++ << ":" ;
+                        tuple->args[i]->print(p);
+                        ptrn << "}";
+                    }
+                } else {
+                    ptrn << "${" << arg++ << ":" ;
+                    fn->dom->print(p);
+                    ptrn << "}";
+                }
+            } 
+            ptrn << ")";
+            ptrn << "$0";
+            item.insertText = pt.str();
         }
     }
-        
-    item.detail = get_completion_detail(&decl);
-    item.kind = get_completion_kind(&decl);
     
-    // Add documentation if available
-    if (!decl.id.name.empty()) {
-        item.documentation = get_completion_documentation(&decl);
+    if(item.label.empty()){
+        item.label = decl.id.name;
+    }
+
+    if (!item.detail && decl.type) {
+        std::stringbuf lb; 
+        std::ostream str0(&lb);
+        log::Output label(str0, false);
+        Printer l(label);
+        decl.type->print(l);
+        item.detail = lb.str();
     }
     return item;
 }
@@ -768,13 +832,14 @@ void Server::setup_events_completion() {
         // const ast::ProjExpr* proj_expr = nullptr;
         // const ast::PathExpr* path_expr = nullptr;
         const ast::ModDecl* current_module = compile->program.get();
+        // const ast::FnDecl* current_function = nullptr;
+        std::vector<const ast::Node*> local_scopes;
         const ast::Node* outer_node = nullptr;
         const ast::Node* inner_node = nullptr;
         bool only_show_types = false;
         bool show_prim_types = true;
 
         std::vector<lsp::CompletionItem> items;
-
 
         ast::Node::TraverseFn traverse([&](const ast::Node& node) -> bool {
             if(!node.loc.file) return true; // super module
@@ -785,11 +850,15 @@ void Server::setup_events_completion() {
             } else if(!outer_node) {
                 outer_node = &node;
             }
-            if(const auto* mod = node.isa<ast::ModDecl>()){
-                current_module = mod;
-            }
-            if(node.isa<ast::TypedExpr>() || node.isa<ast::TypedPtrn>()){
+            if(!only_show_types && (node.isa<ast::TypedExpr>() || node.isa<ast::TypedPtrn>() || node.isa<ast::TypeApp>())){
                 only_show_types = true;
+            } else if(const auto* mod = node.isa<ast::ModDecl>()){
+                current_module = mod;
+            } else if(const auto* fn = node.isa<ast::FnDecl>()){
+                if(fn->fn->param) local_scopes.push_back(fn->fn->param.get());
+                if(fn->type_params) local_scopes.push_back(fn->type_params.get());
+            } else if(const auto* block = node.isa<ast::BlockExpr>()){
+                local_scopes.push_back(block);
             }
             inner_node = &node;
 
@@ -802,10 +871,10 @@ void Server::setup_events_completion() {
         log::Output out(std::clog, false);
         Printer p(out);
         p.print_additional_node_info = true;
-        if(outer_node) {
-            log::info("\n-- Current Module");
-            current_module->print(p);
-        }
+        // if(outer_node) {
+        //     log::info("\n-- Current Module");
+        //     current_module->print(p);
+        // }
         if(inner_node) {
             log::info("\n-- Inner Node");
             inner_node->print(p);
@@ -828,16 +897,10 @@ void Server::setup_events_completion() {
                 }
                 if(type){
                     if(auto addr = type->isa<AddrType>(); addr && addr->pointee) { type = addr->pointee; }
-                    log::info("has type");
-                    type->dump();
-                    if(auto struct_type = type->isa<ComplexType>()){
-                        log::info("is complex");
-                        for (int i = 0; i < struct_type->member_count(); i++) {
-                            lsp::CompletionItem item;
-                            item.label = struct_type->member_name(i);
-                            item.detail = "field";
-                            item.kind = lsp::CompletionItemKind::Field;
-                            items.push_back(std::move(item));
+                    // type->dump();
+                    if(auto struct_type = type->isa<StructType>()){
+                        for (auto& field : struct_type->decl.fields) {
+                            if(auto item = completion_item(*field)) items.push_back(std::move(*item));
                         }
                     }
                 }
@@ -868,18 +931,35 @@ void Server::setup_events_completion() {
                 show_prim_types = false;
             }
         }
+        
+        log::info("show only types {}", only_show_types);
+        log::info("show prim types {}", show_prim_types);
+        log::info("has module: {}", (bool)current_module);
+        
         if(current_module){
+            ast::Node::TraverseFn collect_local_decls([&](const ast::Node& node) -> bool {
+                if(collect_local_decls.depth > 0 && node.isa<ast::BlockExpr>()) {
+                    return false; // do not go into nested blocks
+                }
+                if(const auto* named_decl = node.isa<ast::NamedDecl>(); named_decl) {
+                    if(auto item = completion_item(*named_decl)) items.push_back(std::move(*item));
+                }
+                return true;
+            });
+            for (const auto* scope : local_scopes) {
+                collect_local_decls(*scope);
+            }
+            
+            log::info("current module: {}", current_module->id.name);
             for (const auto& decl : current_module->decls) {
                 if (const auto* named_decl = decl->isa<ast::NamedDecl>(); named_decl && 
                     (!only_show_types || decl->isa<ast::CtorDecl>() || decl->isa<ast::ModDecl>() || decl->isa<ast::TypeParam>() || decl->isa<ast::TypeDecl>() || decl->isa<ast::UseDecl>())
                 ) {
-                    if(auto item = completion_item(*named_decl)){
-                        items.push_back(std::move(*item));
-                    }
+                    if(auto item = completion_item(*named_decl)) items.push_back(std::move(*item));
                 }
             }
         }
-        log::info("show prim types {}", show_prim_types);
+        
         if(show_prim_types) {
             auto show_prim_type = [&](std::string_view prim){
                 lsp::CompletionItem item;
@@ -901,14 +981,35 @@ void Server::setup_events_completion() {
             show_prim_type("f32");
             show_prim_type("f64");
             show_prim_type("simd");
+
+            
+            items.push_back(lsp::CompletionItem {
+                .label = "simd[...]",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .insertText = "simd[${1:expr}]$0",
+            });
+
+            items.push_back(lsp::CompletionItem {
+                .label = "addrspace(...)",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .insertText = "addrspace(${1:1})$0",
+            });
+
+            items.push_back(lsp::CompletionItem {
+                .label = "void",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .detail = "()",
+                .insertText = "()",
+            });
         }
-        
 
         std::reverse(items.begin(), items.end());
 
-        lsp::CompletionList result;
-        result.isIncomplete = false;
-        result.items = std::move(items);
+        lsp::CompletionList result{
+            .isIncomplete = false,
+            .items = std::move(items),
+            .itemDefaults = lsp::CompletionListItemDefaults{ .insertTextFormat = lsp::InsertTextFormat::Snippet },
+        };
 
         log::info("[LSP] >>> Returning {} completion items", result.items.size());
         return result;

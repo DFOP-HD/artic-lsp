@@ -82,6 +82,7 @@ struct Node : public Cast<Node> {
 
     struct TraverseFn {        
         std::function<bool(const Node&)> eval;
+        mutable int depth = 0;
 
         explicit TraverseFn(std::function<bool(const Node&)> eval) 
             : eval(eval) 
@@ -97,7 +98,14 @@ struct Node : public Cast<Node> {
         void operator()(const PtrVector<T>& nodes) const { for(const auto& node : nodes) this->operator()(node); }
     };
 
-    void traverse(const TraverseFn& fn) const { if(fn.eval(*this)) traverse_children(fn); }
+    void traverse(const TraverseFn& fn) const { 
+        if (fn.eval(*this)) { 
+            ++fn.depth; 
+            traverse_children(fn); 
+            --fn.depth;
+        } 
+    }
+    
     virtual void traverse_children(const TraverseFn& fn) const {}
 
     /// Prints the node on the console, for debugging.
