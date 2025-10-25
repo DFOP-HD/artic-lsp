@@ -920,7 +920,7 @@ std::string get_completion_documentation(const ast::NamedDecl* decl) {
 
 
 bool same_file(const Loc& a, const Loc& b) { return a.file && b.file && *a.file == *b.file; }
-bool overlaps(const Loc& a, const Loc& b) { return a.end >= b.begin && a.begin <= b.end; }
+bool overlaps(const Loc& a, const Loc& b) { return a.end > /* important > */ b.begin && a.begin <= b.end; }
 
 std::optional<lsp::CompletionItem> completion_item(const ast::NamedDecl& decl) {
     if(decl.id.name.empty()) return std::nullopt;
@@ -997,8 +997,11 @@ void Server::setup_events_completion() {
         Loc cursor = convert_loc(params.textDocument, params.position);
         // const ast::ProjExpr* proj_expr = nullptr;
         // const ast::PathExpr* path_expr = nullptr;
+        const ast::ModDecl* current_module = compile->program.get();
         const ast::Node* outer_node = nullptr;
         const ast::Node* inner_node = nullptr;
+        bool only_show_types = false;
+        bool show_prim_types = true;
 
         std::vector<lsp::CompletionItem> items;
 
@@ -1012,22 +1015,15 @@ void Server::setup_events_completion() {
             } else if(!outer_node) {
                 outer_node = &node;
             }
+            if(const auto* mod = node.isa<ast::ModDecl>()){
+                current_module = mod;
+            }
+            if(node.isa<ast::TypedExpr>() || node.isa<ast::TypedPtrn>()){
+                only_show_types = true;
+            }
             inner_node = &node;
 
             log::info("Node at {}", node.loc);
-            // if(auto proj = node.isa<ast::ProjExpr>()){
-            //     log::info("found projection expression {}", node.loc);
-            //     proj_expr = proj;
-            //     // at end of projection expr
-            //     if(!overlaps(cursor, proj->expr->loc)) {
-            //         log::info("at end of expression, nice {}", node.loc);
-            //         return true; 
-            //     }
-            // } else if(auto path = node.isa<ast::PathExpr>()){
-            //     log::info("found path expression {}", node.loc);
-            //     path_expr = path;
-            //     return true;
-            // }
             return true;
         });
         
@@ -1037,19 +1033,18 @@ void Server::setup_events_completion() {
         Printer p(out);
         p.print_additional_node_info = true;
         if(outer_node) {
-            log::info("\n-- Outer Node");
-            outer_node->print(p);
+            log::info("\n-- Current Module");
+            current_module->print(p);
         }
         if(inner_node) {
             log::info("\n-- Inner Node");
             inner_node->print(p);
         }
 
-        const ast::ModDecl* current_module = compile->program.get();
 
         if(inner_node) {
+            // Projection expression: a.b
             if(const auto* proj_expr = inner_node->isa<ast::ProjExpr>()) {
-                current_module = nullptr; // not in module context
                 log::info("inside proj expr completion");
                 proj_expr->dump();
                 const Type* type = nullptr;
@@ -1076,7 +1071,11 @@ void Server::setup_events_completion() {
                         }
                     }
                 }
-            } else if(const auto* path = inner_node->isa<ast::Path>()) {
+                current_module = nullptr; // no top level declarations
+                show_prim_types = false;
+            } 
+            // Path expression a::b
+            else if(const auto* path = inner_node->isa<ast::Path>(); path && path->elems.size() > 1) {
                 const ast::Path::Elem* path_elem = &path->elems.front();
                 for (const auto& elem: path->elems){
                     if(cursor.end > elem.loc.end) {
@@ -1096,17 +1095,42 @@ void Server::setup_events_completion() {
                 } else {
                     log::info("no path type");
                 }
-        
+                show_prim_types = false;
             }
         }
         if(current_module){
             for (const auto& decl : current_module->decls) {
-                if (const auto* named_decl = decl->isa<ast::NamedDecl>()) {
+                if (const auto* named_decl = decl->isa<ast::NamedDecl>(); named_decl && 
+                    (!only_show_types || decl->isa<ast::CtorDecl>() || decl->isa<ast::ModDecl>() || decl->isa<ast::TypeParam>() || decl->isa<ast::TypeDecl>() || decl->isa<ast::UseDecl>())
+                ) {
                     if(auto item = completion_item(*named_decl)){
                         items.push_back(std::move(*item));
                     }
                 }
             }
+        }
+        log::info("show prim types {}", show_prim_types);
+        if(show_prim_types) {
+            auto show_prim_type = [&](std::string_view prim){
+                lsp::CompletionItem item;
+                item.kind = lsp::CompletionItemKind::Keyword;
+                item.label = prim;
+                items.push_back(std::move(item));
+            };
+            auto& types = compile->type_table;
+            show_prim_type("bool");
+            show_prim_type("i8");
+            show_prim_type("i16");
+            show_prim_type("i32");
+            show_prim_type("i64");
+            show_prim_type("u8");
+            show_prim_type("u16");
+            show_prim_type("u32");
+            show_prim_type("u64");
+            show_prim_type("f16");
+            show_prim_type("f32");
+            show_prim_type("f64");
+            show_prim_type("simd");
         }
         
 
