@@ -72,236 +72,6 @@ Server::FileType Server::get_file_type(const std::filesystem::path& file) {
     return file.extension() == ".json" ? FileType::ConfigFile : FileType::SourceFile;
 }
 
-
-// -----------------------------------------------------------------------------
-//
-//
-// Server Compilation / Diagnostics
-//
-//
-// -----------------------------------------------------------------------------
-
-void Server::compile_file(const std::filesystem::path& file) {
-    Timer _("Compile Files");
-
-    std::vector<const workspace::File*> files;
-    compile.emplace();
-    compile->active_file = file;
-
-    if(auto proj = workspace_->project_for_file(file)){
-        // known project    
-        log::info("Compiling file {} (project '{}')", file, proj.value()->name);
-
-        files = proj.value()->collect_files();
-    } else {
-        // default project
-        auto default_proj = workspace_->default_project();
-        
-        log::info("Compiling file {} (not in workspace -> using default project {})", file, default_proj->name);
-        
-        files = default_proj->collect_files();
-        auto temp_file = std::make_unique<workspace::File>(file);
-        temp_file->read();
-        files.push_back(temp_file.get());
-
-        // keep the temporary file alive for diagnostics
-        compile->temporary_files.push_back(std::move(temp_file));
-    }
-    
-    if (files.empty()) {
-        log::info("no input files (compile_files)");
-        return;
-    }
-
-    log::info("Compiling {} file(s)", files.size());
-
-    if(safe_mode_) {
-        compile->exclude_non_parsed_files = true;
-        log::info("Using safe mode");
-    }
-
-    compile->compile_files(files);
-
-    if(safe_mode_ && compile->parsed_all) {
-        safe_mode_ = false;
-        log::info("Successfully parsed all files, turning off safe mode");
-    }
-
-    const bool print_compile_log = false;
-    if(print_compile_log) compile->log.print_summary();
-
-    if(compile->log.errors == 0){
-        log::info("Compile success");
-    } else {
-        log::info("Compile failed");
-    }
-
-    // log::Output out(std::clog, false);
-    // Printer p(out);
-    // p.print_additional_node_info = true;
-    // for(auto& [decl, _]: compile->name_map.files[file].references_of) {
-    //     if(decl->is_top_level)
-    //         decl->print(p);
-    // }
-
-    auto convert_diagnostic = [](const Diagnostic& diag) -> lsp::Diagnostic {
-        lsp::Diagnostic lsp_diag;
-        lsp_diag.message = diag.message;
-        lsp_diag.range = lsp::Range {
-            .start = lsp::Position { static_cast<uint>(diag.loc.begin.row - 1), static_cast<uint>(diag.loc.begin.col - 1) },
-            .end   = lsp::Position { static_cast<uint>(diag.loc.end.row   - 1), static_cast<uint>(diag.loc.end.col   - 1) }
-        };
-        switch (diag.severity) {
-            case Diagnostic::Error:   lsp_diag.severity = lsp::DiagnosticSeverity::Error;       break;
-            case Diagnostic::Warning: lsp_diag.severity = lsp::DiagnosticSeverity::Warning;     break;
-            case Diagnostic::Info:    lsp_diag.severity = lsp::DiagnosticSeverity::Information; break;
-            case Diagnostic::Hint:    lsp_diag.severity = lsp::DiagnosticSeverity::Hint;        break;
-        }
-        return lsp_diag;
-    };
-
-    // Send Diagnostics for the provided files only
-    std::unordered_map<std::string, std::vector<lsp::Diagnostic>> diagnostics_by_file;
-    for (const auto& diag : compile->diagnostics) {
-        diagnostics_by_file[*diag.loc.file].push_back(convert_diagnostic(diag));
-    }
-    for (const auto* file : files) {
-        auto path = file->path.string();
-
-        message_handler_.sendNotification<notif::TextDocument_PublishDiagnostics>(
-            notif::TextDocument_PublishDiagnostics::Params {
-                .uri = lsp::FileUri::fromPath(path),
-                .diagnostics = diagnostics_by_file.contains(path) ? diagnostics_by_file.at(path) : std::vector<lsp::Diagnostic>{}
-            }
-        );
-    }
-}
-
-void Server::ensure_compile(std::string_view file_view) {
-    std::string file(file_view);
-    bool already_compiled = compile && compile->locator.data(file);
-    if (!already_compiled) compile_file(file);
-    if (!compile) throw lsp::RequestError(lsp::Error::InternalError, "Did not get a compilation result");
-}
-
-
-// -----------------------------------------------------------------------------
-//
-//
-// Server Reload Workspace
-//
-//
-// -----------------------------------------------------------------------------
-
-
-using FileDiags = std::unordered_map<std::filesystem::path, std::vector<lsp::Diagnostic>>;
-
-void make_config_diagnostic(const workspace::config::ConfigLog::Message& msg, 
-    std::optional<std::filesystem::path> propagate_to_file,
-    FileDiags& diags
-) {
-    auto find_in_file = [](std::filesystem::path const& file, std::string_view literal) -> std::vector<lsp::Range> {
-        std::vector<lsp::Range> ranges;
-        if(literal.empty()) return ranges;
-        std::ifstream ifs(file);
-        if (!ifs) return ranges;
-
-        std::string line;
-        lsp::uint line_number = 0;
-        while (std::getline(ifs, line)) {
-            size_t pos = line.find(literal);
-            while (pos != std::string::npos) {
-                ranges.push_back(lsp::Range{
-                    lsp::Position{line_number, static_cast<lsp::uint>(pos)},
-                    lsp::Position{line_number, static_cast<lsp::uint>(pos + literal.size())}
-                });
-                pos = line.find(literal, pos + 1);
-            }
-            line_number++;
-        }
-        return ranges;
-    };
-    lsp::Diagnostic diag;
-    diag.message = msg.message;
-    diag.severity = msg.severity;
-    diag.range = lsp::Range{ lsp::Position{0,0}, lsp::Position{0,0} };
-    
-    auto file = msg.file;
-    if(propagate_to_file) {
-        if(propagate_to_file.value() == msg.file) return;
-        file = propagate_to_file.value();
-        diag.message = "[" + msg.file.string() + "] " + diag.message;
-    }
-
-    int display_count = 0;
-    if(msg.context.has_value()) {
-        auto literal = msg.context.value().literal;
-        if(propagate_to_file) literal = "include";
-
-        auto occurrences = find_in_file(file, literal);
-        for(auto& occ : occurrences) {
-            lsp::Diagnostic pos_diag(diag);
-            pos_diag.range = occ;
-            diags[file].push_back(pos_diag);
-            display_count++;
-        }
-    }
-    if(display_count == 0) diags[file].push_back(diag);
-};
-
-void Server::reload_workspace(const std::string& active_file) {
-    Timer _("Reload Workspace");
-    log::info("Reloading workspace configuration");
-    workspace::config::ConfigLog log;
-    workspace_->reload(log);
-    const bool print_to_console = true;
-    if(print_to_console) {
-        log::info("Reloaded Workspace");
-        log::info("--- Config Log ---");
-        for (auto& e : log.messages) {
-            if(e.severity > lsp::DiagnosticSeverity::Warning) continue;
-            auto s = 
-                (e.severity == lsp::DiagnosticSeverity::Error)        ? "Error" :
-                (e.severity == lsp::DiagnosticSeverity::Warning)      ? "Warning" : 
-                (e.severity == lsp::DiagnosticSeverity::Information)  ? "Info" : 
-                (e.severity == lsp::DiagnosticSeverity::Hint)         ? "Hint" : 
-                                                                        "Unknown";
-
-            log::info("[{}] {}: {}", s, e.file, e.message);
-        }
-        log::info("--- Config Log ---");
-        workspace_->projects_.print();
-    }
-
-    FileDiags fileDiags;
-
-    // create diagnostics
-    for (const auto& e : log.messages) {
-        // Diagnosics for the file itself
-        make_config_diagnostic(e, std::nullopt, fileDiags);
-
-        // Propagate errors to the workspace config file
-        if(e.severity == lsp::DiagnosticSeverity::Error) {
-            make_config_diagnostic(e, workspace_->workspace_config_path, fileDiags);
-        }
-    }
-
-    // Send diagnostics
-    for(auto& [file, diags] : fileDiags) {
-        message_handler_.sendNotification<notif::TextDocument_PublishDiagnostics>(
-            notif::TextDocument_PublishDiagnostics::Params {
-                .uri = lsp::FileUri::fromPath(file.string()),
-                .diagnostics = diags
-            }
-        );
-    }
-
-    if(compile){
-        auto file = compile->active_file;
-        compile_file(file);
-    }
-}
-
 lsp::Location convert_loc(const Loc& loc){
     if (!loc.file) throw lsp::RequestError(lsp::Error::InternalError, "Cannot convert location with undefined file");
     return lsp::Location {
@@ -1144,6 +914,237 @@ void Server::setup_events_completion() {
         return result;
     });
 }
+
+
+// -----------------------------------------------------------------------------
+//
+//
+// Server Compilation / Diagnostics
+//
+//
+// -----------------------------------------------------------------------------
+
+void Server::compile_file(const std::filesystem::path& file) {
+    Timer _("Compile Files");
+
+    std::vector<const workspace::File*> files;
+    compile.emplace();
+    compile->active_file = file;
+
+    if(auto proj = workspace_->project_for_file(file)){
+        // known project    
+        log::info("Compiling file {} (project '{}')", file, proj.value()->name);
+
+        files = proj.value()->collect_files();
+    } else {
+        // default project
+        auto default_proj = workspace_->default_project();
+        
+        log::info("Compiling file {} (not in workspace -> using default project {})", file, default_proj->name);
+        
+        files = default_proj->collect_files();
+        auto temp_file = std::make_unique<workspace::File>(file);
+        temp_file->read();
+        files.push_back(temp_file.get());
+
+        // keep the temporary file alive for diagnostics
+        compile->temporary_files.push_back(std::move(temp_file));
+    }
+    
+    if (files.empty()) {
+        log::info("no input files (compile_files)");
+        return;
+    }
+
+    log::info("Compiling {} file(s)", files.size());
+
+    if(safe_mode_) {
+        compile->exclude_non_parsed_files = true;
+        log::info("Using safe mode");
+    }
+
+    compile->compile_files(files);
+
+    if(safe_mode_ && compile->parsed_all) {
+        safe_mode_ = false;
+        log::info("Successfully parsed all files, turning off safe mode");
+    }
+
+    const bool print_compile_log = false;
+    if(print_compile_log) compile->log.print_summary();
+
+    if(compile->log.errors == 0){
+        log::info("Compile success");
+    } else {
+        log::info("Compile failed");
+    }
+
+    // log::Output out(std::clog, false);
+    // Printer p(out);
+    // p.print_additional_node_info = true;
+    // for(auto& [decl, _]: compile->name_map.files[file].references_of) {
+    //     if(decl->is_top_level)
+    //         decl->print(p);
+    // }
+
+    auto convert_diagnostic = [](const Diagnostic& diag) -> lsp::Diagnostic {
+        lsp::Diagnostic lsp_diag;
+        lsp_diag.message = diag.message;
+        lsp_diag.range = lsp::Range {
+            .start = lsp::Position { static_cast<uint>(diag.loc.begin.row - 1), static_cast<uint>(diag.loc.begin.col - 1) },
+            .end   = lsp::Position { static_cast<uint>(diag.loc.end.row   - 1), static_cast<uint>(diag.loc.end.col   - 1) }
+        };
+        switch (diag.severity) {
+            case Diagnostic::Error:   lsp_diag.severity = lsp::DiagnosticSeverity::Error;       break;
+            case Diagnostic::Warning: lsp_diag.severity = lsp::DiagnosticSeverity::Warning;     break;
+            case Diagnostic::Info:    lsp_diag.severity = lsp::DiagnosticSeverity::Information; break;
+            case Diagnostic::Hint:    lsp_diag.severity = lsp::DiagnosticSeverity::Hint;        break;
+        }
+        return lsp_diag;
+    };
+
+    // Send Diagnostics for the provided files only
+    std::unordered_map<std::string, std::vector<lsp::Diagnostic>> diagnostics_by_file;
+    for (const auto& diag : compile->diagnostics) {
+        diagnostics_by_file[*diag.loc.file].push_back(convert_diagnostic(diag));
+    }
+    for (const auto* file : files) {
+        auto path = file->path.string();
+
+        message_handler_.sendNotification<notif::TextDocument_PublishDiagnostics>(
+            notif::TextDocument_PublishDiagnostics::Params {
+                .uri = lsp::FileUri::fromPath(path),
+                .diagnostics = diagnostics_by_file.contains(path) ? diagnostics_by_file.at(path) : std::vector<lsp::Diagnostic>{}
+            }
+        );
+    }
+}
+
+void Server::ensure_compile(std::string_view file_view) {
+    std::string file(file_view);
+    bool already_compiled = compile && compile->locator.data(file);
+    if (!already_compiled) compile_file(file);
+    if (!compile) throw lsp::RequestError(lsp::Error::InternalError, "Did not get a compilation result");
+}
+
+
+// -----------------------------------------------------------------------------
+//
+//
+// Server Reload Workspace
+//
+//
+// -----------------------------------------------------------------------------
+
+
+using FileDiags = std::unordered_map<std::filesystem::path, std::vector<lsp::Diagnostic>>;
+
+void make_config_diagnostic(const workspace::config::ConfigLog::Message& msg, 
+    std::optional<std::filesystem::path> propagate_to_file,
+    FileDiags& diags
+) {
+    auto find_in_file = [](std::filesystem::path const& file, std::string_view literal) -> std::vector<lsp::Range> {
+        std::vector<lsp::Range> ranges;
+        if(literal.empty()) return ranges;
+        std::ifstream ifs(file);
+        if (!ifs) return ranges;
+
+        std::string line;
+        lsp::uint line_number = 0;
+        while (std::getline(ifs, line)) {
+            size_t pos = line.find(literal);
+            while (pos != std::string::npos) {
+                ranges.push_back(lsp::Range{
+                    lsp::Position{line_number, static_cast<lsp::uint>(pos)},
+                    lsp::Position{line_number, static_cast<lsp::uint>(pos + literal.size())}
+                });
+                pos = line.find(literal, pos + 1);
+            }
+            line_number++;
+        }
+        return ranges;
+    };
+    lsp::Diagnostic diag;
+    diag.message = msg.message;
+    diag.severity = msg.severity;
+    diag.range = lsp::Range{ lsp::Position{0,0}, lsp::Position{0,0} };
+    
+    auto file = msg.file;
+    if(propagate_to_file) {
+        if(propagate_to_file.value() == msg.file) return;
+        file = propagate_to_file.value();
+        diag.message = "[" + msg.file.string() + "] " + diag.message;
+    }
+
+    int display_count = 0;
+    if(msg.context.has_value()) {
+        auto literal = msg.context.value().literal;
+        if(propagate_to_file) literal = "include";
+
+        auto occurrences = find_in_file(file, literal);
+        for(auto& occ : occurrences) {
+            lsp::Diagnostic pos_diag(diag);
+            pos_diag.range = occ;
+            diags[file].push_back(pos_diag);
+            display_count++;
+        }
+    }
+    if(display_count == 0) diags[file].push_back(diag);
+};
+
+void Server::reload_workspace(const std::string& active_file) {
+    Timer _("Reload Workspace");
+    log::info("Reloading workspace configuration");
+    workspace::config::ConfigLog log;
+    workspace_->reload(log);
+    const bool print_to_console = true;
+    if(print_to_console) {
+        log::info("Reloaded Workspace");
+        log::info("--- Config Log ---");
+        for (auto& e : log.messages) {
+            if(e.severity > lsp::DiagnosticSeverity::Warning) continue;
+            auto s = 
+                (e.severity == lsp::DiagnosticSeverity::Error)        ? "Error" :
+                (e.severity == lsp::DiagnosticSeverity::Warning)      ? "Warning" : 
+                (e.severity == lsp::DiagnosticSeverity::Information)  ? "Info" : 
+                (e.severity == lsp::DiagnosticSeverity::Hint)         ? "Hint" : 
+                                                                        "Unknown";
+
+            log::info("[{}] {}: {}", s, e.file, e.message);
+        }
+        log::info("--- Config Log ---");
+        workspace_->projects_.print();
+    }
+
+    FileDiags fileDiags;
+
+    // create diagnostics
+    for (const auto& e : log.messages) {
+        // Diagnosics for the file itself
+        make_config_diagnostic(e, std::nullopt, fileDiags);
+
+        // Propagate errors to the workspace config file
+        if(e.severity == lsp::DiagnosticSeverity::Error) {
+            make_config_diagnostic(e, workspace_->workspace_config_path, fileDiags);
+        }
+    }
+
+    // Send diagnostics
+    for(auto& [file, diags] : fileDiags) {
+        message_handler_.sendNotification<notif::TextDocument_PublishDiagnostics>(
+            notif::TextDocument_PublishDiagnostics::Params {
+                .uri = lsp::FileUri::fromPath(file.string()),
+                .diagnostics = diags
+            }
+        );
+    }
+
+    if(compile){
+        auto file = compile->active_file;
+        compile_file(file);
+    }
+}
+
 
 // -----------------------------------------------------------------------------
 //
