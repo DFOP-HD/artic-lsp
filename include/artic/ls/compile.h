@@ -61,7 +61,7 @@ public:
     ~Timer() {
         auto end = std::chrono::steady_clock::now();
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start_).count();
-        log::info("{} took {} ms", label_, ms);
+        // log::info("{} took {} ms", label_, ms);
     }
 private:
     std::string label_;

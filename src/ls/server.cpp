@@ -396,7 +396,7 @@ void Server::setup_events_initialization() {
                     .save      = lsp::SaveOptions{ .includeText = false },
                 },
                 .completionProvider = lsp::CompletionOptions{
-                    .triggerCharacters = std::vector<std::string>{"."}
+                    .triggerCharacters = std::vector<std::string>{".", ":"}
                 },
                 .definitionProvider = true,
                 .referencesProvider = true,
@@ -477,7 +477,9 @@ void Server::setup_events_modifications() {
         }
     });
     message_handler_.add<notif::TextDocument_DidChange>([this](notif::TextDocument_DidChange::Params&& params) {
-        log::info("\n[LSP] <<< TextDocument DidChange");
+        log::info("");
+        log::info("--------------------------------");
+        log::info("[LSP] <<< TextDocument DidChange");
         std::filesystem::path file = params.textDocument.uri.path();
         if(get_file_type(file) == FileType::ConfigFile) {
             return;
@@ -991,80 +993,114 @@ void Server::setup_events_completion() {
             log::info("[LSP] >>> No compilation available for completion");
             return nullptr;
         }
-        params.position.character--;
-        Loc loc = convert_loc(params.textDocument, params.position);
-        const ast::ProjExpr* proj_expr = nullptr;
-        const ast::PathExpr* path_expr = nullptr;
+        // params.position.character--;
+        Loc cursor = convert_loc(params.textDocument, params.position);
+        // const ast::ProjExpr* proj_expr = nullptr;
+        // const ast::PathExpr* path_expr = nullptr;
+        const ast::Node* outer_node = nullptr;
+        const ast::Node* inner_node = nullptr;
 
         std::vector<lsp::CompletionItem> items;
-
-        log::Output out(std::clog, false);
-        Printer p(out);
-        p.print_additional_node_info = true;
 
 
         ast::Node::TraverseFn traverse([&](const ast::Node& node) -> bool {
             if(!node.loc.file) return true; // super module
-            if(!same_file(loc, node.loc)) return false;
+            if(!same_file(cursor, node.loc)) return false;
             // log::info("test node at {} vs {}", node.loc, loc);
-            if(!overlaps(loc, node.loc)) {
+            if(!overlaps(cursor, node.loc)) {
                 return false;
+            } else if(!outer_node) {
+                outer_node = &node;
             }
-            node.dump();
+            inner_node = &node;
 
             log::info("Node at {}", node.loc);
-            if(auto proj = node.isa<ast::ProjExpr>()){
-                log::info("found projection expression {}", node.loc);
-                proj_expr = proj;
-                // at end of projection expr
-                if(!overlaps(loc, proj->expr->loc)) {
-                    log::info("at end of expression, nice {}", node.loc);
-                    return false; 
-                }
-            } else if(auto path = node.isa<ast::PathExpr>()){
-                log::info("found path expression {}", node.loc);
-                path_expr = path;
-                return false;
-            }
+            // if(auto proj = node.isa<ast::ProjExpr>()){
+            //     log::info("found projection expression {}", node.loc);
+            //     proj_expr = proj;
+            //     // at end of projection expr
+            //     if(!overlaps(cursor, proj->expr->loc)) {
+            //         log::info("at end of expression, nice {}", node.loc);
+            //         return true; 
+            //     }
+            // } else if(auto path = node.isa<ast::PathExpr>()){
+            //     log::info("found path expression {}", node.loc);
+            //     path_expr = path;
+            //     return true;
+            // }
             return true;
         });
-
+        
         traverse(compile->program);
 
-        if(proj_expr){
-            log::info("inside proj expr completion");
-            proj_expr->dump();
-            const Type* type = nullptr;
-            if(proj_expr->type && !proj_expr->type->isa<TypeError>()) {
-                log::info("using proj expr type");
-                type = proj_expr->type;
-            }
-            else if(proj_expr->expr->type && !proj_expr->expr->type->isa<TypeError>()){
-                log::info("using proj expr expr type");
-                type = proj_expr->expr->type;
-            }
-            if(type){
-                if(auto addr = type->isa<AddrType>(); addr && addr->pointee) { type = addr->pointee; }
-                log::info("has type");
-                type->dump();
-                if(auto struct_type = type->isa<ComplexType>()){
-                    log::info("is complex");
-                    for (int i = 0; i < struct_type->member_count(); i++) {
-                        lsp::CompletionItem item;
-                        item.label = struct_type->member_name(i);
-                        item.detail = "field";
-                        item.kind = lsp::CompletionItemKind::Field;
-                        items.push_back(std::move(item));
+        log::Output out(std::clog, false);
+        Printer p(out);
+        p.print_additional_node_info = true;
+        if(outer_node) {
+            log::info("\n-- Outer Node");
+            outer_node->print(p);
+        }
+        if(inner_node) {
+            log::info("\n-- Inner Node");
+            inner_node->print(p);
+        }
+
+        const ast::ModDecl* current_module = compile->program.get();
+
+        if(inner_node) {
+            if(const auto* proj_expr = inner_node->isa<ast::ProjExpr>()) {
+                current_module = nullptr; // not in module context
+                log::info("inside proj expr completion");
+                proj_expr->dump();
+                const Type* type = nullptr;
+                if(proj_expr->type && !proj_expr->type->isa<TypeError>()) {
+                    log::info("using proj expr type");
+                    type = proj_expr->type;
+                }
+                else if(proj_expr->expr->type && !proj_expr->expr->type->isa<TypeError>()){
+                    log::info("using proj expr expr type");
+                    type = proj_expr->expr->type;
+                }
+                if(type){
+                    if(auto addr = type->isa<AddrType>(); addr && addr->pointee) { type = addr->pointee; }
+                    log::info("has type");
+                    type->dump();
+                    if(auto struct_type = type->isa<ComplexType>()){
+                        log::info("is complex");
+                        for (int i = 0; i < struct_type->member_count(); i++) {
+                            lsp::CompletionItem item;
+                            item.label = struct_type->member_name(i);
+                            item.detail = "field";
+                            item.kind = lsp::CompletionItemKind::Field;
+                            items.push_back(std::move(item));
+                        }
                     }
                 }
+            } else if(const auto* path = inner_node->isa<ast::Path>()) {
+                const ast::Path::Elem* path_elem = &path->elems.front();
+                for (const auto& elem: path->elems){
+                    if(cursor.end > elem.loc.end) {
+                        path_elem = &elem;
+                    }
+                }
+
+                log::info("path expression complete");
+                path->dump();
+                log::info("after element: {}", path_elem->id.name);
+                if(path_elem->type) {
+                    if(const auto* mod = path_elem->type->isa<ModType>()) {
+                        current_module = &mod->decl;
+                    } else {
+                        log::info("invalid module type {}", path_elem->type);
+                    }
+                } else {
+                    log::info("no path type");
+                }
+        
             }
-        } else if(path_expr) {
-            log::info("path expression complete");
-            path_expr->dump();
-    
-        } else {
-            // generic context
-            for (const auto& decl : compile->program->decls) {
+        }
+        if(current_module){
+            for (const auto& decl : current_module->decls) {
                 if (const auto* named_decl = decl->isa<ast::NamedDecl>()) {
                     if(auto item = completion_item(*named_decl)){
                         items.push_back(std::move(*item));
@@ -1072,6 +1108,7 @@ void Server::setup_events_completion() {
                 }
             }
         }
+        
 
         std::reverse(items.begin(), items.end());
 
