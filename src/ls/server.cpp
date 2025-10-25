@@ -838,6 +838,8 @@ void Server::setup_events_completion() {
         const ast::Node* inner_node = nullptr;
         bool only_show_types = false;
         bool show_prim_types = true;
+        bool inside_block_expr = false;
+        bool top_level = false;
 
         std::vector<lsp::CompletionItem> items;
 
@@ -859,6 +861,10 @@ void Server::setup_events_completion() {
                 if(fn->type_params) local_scopes.push_back(fn->type_params.get());
             } else if(const auto* block = node.isa<ast::BlockExpr>()){
                 local_scopes.push_back(block);
+                inside_block_expr = true;
+                top_level = false;
+            } else if(const auto* error = node.isa<ast::ErrorDecl>(); error && error->is_top_level) {
+                top_level = true;
             }
             inner_node = &node;
 
@@ -929,6 +935,7 @@ void Server::setup_events_completion() {
                     log::info("no path type");
                 }
                 show_prim_types = false;
+                inside_block_expr = false; // dont show local vars
             }
         }
         
@@ -936,21 +943,8 @@ void Server::setup_events_completion() {
         log::info("show prim types {}", show_prim_types);
         log::info("has module: {}", (bool)current_module);
         
-        if(current_module){
-            ast::Node::TraverseFn collect_local_decls([&](const ast::Node& node) -> bool {
-                if(collect_local_decls.depth > 0 && node.isa<ast::BlockExpr>()) {
-                    return false; // do not go into nested blocks
-                }
-                if(const auto* named_decl = node.isa<ast::NamedDecl>(); named_decl) {
-                    if(auto item = completion_item(*named_decl)) items.push_back(std::move(*item));
-                }
-                return true;
-            });
-            for (const auto* scope : local_scopes) {
-                collect_local_decls(*scope);
-            }
-            
-            log::info("current module: {}", current_module->id.name);
+        if(current_module && !top_level){          
+            // decls inside current module
             for (const auto& decl : current_module->decls) {
                 if (const auto* named_decl = decl->isa<ast::NamedDecl>(); named_decl && 
                     (!only_show_types || decl->isa<ast::CtorDecl>() || decl->isa<ast::ModDecl>() || decl->isa<ast::TypeParam>() || decl->isa<ast::TypeDecl>() || decl->isa<ast::UseDecl>())
@@ -958,9 +952,93 @@ void Server::setup_events_completion() {
                     if(auto item = completion_item(*named_decl)) items.push_back(std::move(*item));
                 }
             }
+
+            if (inside_block_expr){
+                ast::Node::TraverseFn collect_local_decls([&](const ast::Node& node) -> bool {
+                    if(collect_local_decls.depth > 0 && node.isa<ast::BlockExpr>()) {
+                        return false; // do not go into nested blocks
+                    }
+                    if(const auto* named_decl = node.isa<ast::NamedDecl>(); named_decl) {
+                        if(auto item = completion_item(*named_decl)) items.push_back(std::move(*item));
+                    }
+                    return true;
+                });
+                for (const auto* scope : local_scopes) {
+                    collect_local_decls(*scope);
+                }
+            }
+        }
+
+        // Local snippets
+        if(current_module && inside_block_expr) {
+            items.push_back(lsp::CompletionItem {
+                .label = "for",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .detail = "For Loop",
+                .insertText = "for ${1:i} in ${2:range} {\n\t$0\n}",
+            });
+
+            items.push_back(lsp::CompletionItem {
+                .label = "forrange",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .detail = "Range For Loop",
+                .insertText = "for ${1:i} in range(${2:0}, ${3:count}) {\n\t$0\n}",
+            });
+
+            items.push_back(lsp::CompletionItem {
+                .label = "if",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .detail = "If Statement",
+                .insertText = "if ${1:condition} {\n\t$0\n}",
+            });
+
+            items.push_back(lsp::CompletionItem {
+                .label = "else",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .detail = "Else Statement",
+                .insertText = "else {\n\t$0\n}",
+            });
+
+            items.push_back(lsp::CompletionItem {
+                .label = "match",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .detail = "Match Expression",
+                .insertText = "match ${1:expression} {\n\t${2:pattern} => ${3:result},\n\t${0}\n}",
+            });
+
+            items.push_back(lsp::CompletionItem {
+                .label = "let",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .detail = "Let Binding",
+                .insertText = "let ${1:variable} = ${0:value};",
+            });
         }
         
-        if(show_prim_types) {
+        // Top level snippets
+        if(current_module && top_level) {
+            items.push_back(lsp::CompletionItem {
+                .label = "fn",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .detail = "Function Declaration",
+                .insertText = "fn @${1:function}($2) -> ${3:ret_type} {\n\t$0\n}",
+            });
+
+            items.push_back(lsp::CompletionItem {
+                .label = "struct",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .detail = "Struct Declaration",
+                .insertText = "struct ${1:StructName} {\n\t${0}\n}",
+            });
+
+            items.push_back(lsp::CompletionItem {
+                .label = "mod",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .detail = "Module Declaration",
+                .insertText = "mod ${1:module_name} {\n\t${0}\n}",
+            });
+        }
+        
+        if(show_prim_types && !top_level) {
             auto show_prim_type = [&](std::string_view prim){
                 lsp::CompletionItem item;
                 item.kind = lsp::CompletionItemKind::Keyword;
