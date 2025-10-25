@@ -881,24 +881,25 @@ void Server::setup_events_completion() {
         //     log::info("\n-- Current Module");
         //     current_module->print(p);
         // }
-        if(inner_node) {
-            log::info("\n-- Inner Node");
-            inner_node->print(p);
-        }
+
+        // if(inner_node) {
+        //     log::info("\n-- Inner Node");
+        //     inner_node->print(p);
+        // }
 
 
         if(inner_node) {
             // Projection expression: a.b
             if(const auto* proj_expr = inner_node->isa<ast::ProjExpr>()) {
-                log::info("inside proj expr completion");
+                // log::info("inside proj expr completion");
                 proj_expr->dump();
                 const Type* type = nullptr;
                 if(proj_expr->type && !proj_expr->type->isa<TypeError>()) {
-                    log::info("using proj expr type");
+                    // log::info("using proj expr type");
                     type = proj_expr->type;
                 }
                 else if(proj_expr->expr->type && !proj_expr->expr->type->isa<TypeError>()){
-                    log::info("using proj expr expr type");
+                    // log::info("using proj expr expr type");
                     type = proj_expr->expr->type;
                 }
                 if(type){
@@ -922,17 +923,13 @@ void Server::setup_events_completion() {
                     }
                 }
 
-                log::info("path expression complete");
-                path->dump();
-                log::info("after element: {}", path_elem->id.name);
+                // log::info("path expression complete");
+                // path->dump();
+                // log::info("after element: {}", path_elem->id.name);
                 if(path_elem->type) {
                     if(const auto* mod = path_elem->type->isa<ModType>()) {
                         current_module = &mod->decl;
-                    } else {
-                        log::info("invalid module type {}", path_elem->type);
                     }
-                } else {
-                    log::info("no path type");
                 }
                 show_prim_types = false;
                 inside_block_expr = false; // dont show local vars
