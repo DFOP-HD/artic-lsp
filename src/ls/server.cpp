@@ -1010,7 +1010,28 @@ void Server::setup_events_completion() {
                 .label = "let",
                 .kind = lsp::CompletionItemKind::Keyword,
                 .detail = "Let Binding",
-                .insertText = "let ${1:variable} = ${0:value};",
+                .insertText = "let ${1:variable} = ${2:value};$0",
+            });
+
+            items.push_back(lsp::CompletionItem {
+                .label = "return",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .detail = "Return Statement",
+                .insertText = "return($1)$0",
+            });
+
+            items.push_back(lsp::CompletionItem {
+                .label = "continue",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .detail = "Continue Statement",
+                .insertText = "continue()",
+            });
+
+            items.push_back(lsp::CompletionItem {
+                .label = "break",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .detail = "Break Statement",
+                .insertText = "break()",
             });
         }
         
@@ -1031,10 +1052,45 @@ void Server::setup_events_completion() {
             });
 
             items.push_back(lsp::CompletionItem {
+                .label = "record",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .detail = "Record Declaration",
+                .insertText = "struct ${1:RecordName}($2);$0",
+            });
+
+            items.push_back(lsp::CompletionItem {
                 .label = "mod",
                 .kind = lsp::CompletionItemKind::Keyword,
                 .detail = "Module Declaration",
                 .insertText = "mod ${1:module_name} {\n\t${0}\n}",
+            });
+
+            items.push_back(lsp::CompletionItem {
+                .label = "enum",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .detail = "Enum Declaration",
+                .insertText = "enum ${1:EnumName} {\n\t${0}\n}",
+            });
+
+            items.push_back(lsp::CompletionItem {
+                .label = "static",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .detail = "Static Declaration",
+                .insertText = "static ${1:variable} = ${2:value};$0",
+            });
+
+            items.push_back(lsp::CompletionItem {
+                .label = "type",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .detail = "Type Alias Declaration",
+                .insertText = "type ${1:TypeName} = ${2:UnderlyingType};$0",
+            });
+
+            items.push_back(lsp::CompletionItem {
+                .label = "use",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .detail = "Use Declaration",
+                .insertText = "use ${1:module_name} as ${2:alias_name};$0",
             });
         }
         
