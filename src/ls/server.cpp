@@ -920,6 +920,65 @@ std::string get_completion_documentation(const ast::NamedDecl* decl) {
 bool same_file(const Loc& a, const Loc& b) { return a.file && b.file && *a.file == *b.file; }
 bool overlaps(const Loc& a, const Loc& b) { return a.end >= b.begin && a.begin <= b.end; }
 
+std::optional<lsp::CompletionItem> completion_item(const ast::NamedDecl& decl) {
+    if(decl.id.name.empty()) return std::nullopt;
+    if(decl.id.name.starts_with('_')) return std::nullopt;
+    lsp::CompletionItem item;
+    item.label = decl.id.name;
+    item.insertTextFormat = lsp::InsertTextFormat::Snippet;
+
+    if(decl.type) {
+        if (auto fn = decl.isa<ast::FnDecl>()) {
+            std::stringbuf buf; 
+            std::ostream str(&buf);
+            log::Output o(str, false);
+            int arg = 1;
+            if(fn->type_params && !fn->type_params->params.empty()) {
+                o << "[";
+                for(int i = 0; i < fn->type_params->params.size(); i++) {
+                    if(i > 0) o << ", ";
+                    // o << "${" << arg++ << ":" ;
+                    o << fn->type_params->params[i]->id.name;
+                    // o << "}";
+                }
+                o << "]";
+            }
+            if(fn->fn->param){
+                Printer p(o);
+                if(fn->fn->param->is_tuple()){
+                    o << "(";
+                    auto tuple = fn->fn->param->isa<ast::TuplePtrn>();
+                    for(int i = 0; i < tuple->args.size(); i++) {
+                        if(i > 0) o << ", ";
+                        // o << "${" << arg++ << ":" ;
+                        tuple->args[i]->print(p);
+                        // o << "}";
+                    }
+                    o << ")";
+                } else {
+                    // o << "${" << arg++ << ":" ;
+                    fn->fn->param->print(p);
+                    // o << "}";
+                }
+            } else {
+                o << "()";
+            }
+            item.label += buf.str();
+        } else if (auto fn = decl.type->isa<FnType>()) {
+            item.label += "()";
+        }
+    }
+        
+    item.detail = get_completion_detail(&decl);
+    item.kind = get_completion_kind(&decl);
+    
+    // Add documentation if available
+    if (!decl.id.name.empty()) {
+        item.documentation = get_completion_documentation(&decl);
+    }
+    return item;
+}
+
 void Server::setup_events_completion() {
     message_handler_.add<reqst::TextDocument_Completion>([this](lsp::CompletionParams&& params) -> reqst::TextDocument_Completion::Result {
         log::info("[LSP] <<< TextDocument Completion {}:{}:{}", 
@@ -939,65 +998,10 @@ void Server::setup_events_completion() {
 
         std::vector<lsp::CompletionItem> items;
 
-        auto add_decl = [&](const ast::NamedDecl& decl) {
-            if(decl.id.name.empty()) return;
-            if(decl.id.name.starts_with('_')) return;
-            lsp::CompletionItem item;
-            item.label = decl.id.name;
-            item.insertTextFormat = lsp::InsertTextFormat::Snippet;
+        log::Output out(std::clog, false);
+        Printer p(out);
+        p.print_additional_node_info = true;
 
-            if(decl.type) {
-                if (auto fn = decl.isa<ast::FnDecl>()) {
-                    std::stringbuf buf; 
-                    std::ostream str(&buf);
-                    log::Output o(str, false);
-                    int arg = 1;
-                    if(fn->type_params && !fn->type_params->params.empty()) {
-                        o << "[";
-                        for(int i = 0; i < fn->type_params->params.size(); i++) {
-                            if(i > 0) o << ", ";
-                            // o << "${" << arg++ << ":" ;
-                            o << fn->type_params->params[i]->id.name;
-                            // o << "}";
-                        }
-                        o << "]";
-                    }
-                    if(fn->fn->param){
-                        Printer p(o);
-                        if(fn->fn->param->is_tuple()){
-                            o << "(";
-                            auto tuple = fn->fn->param->isa<ast::TuplePtrn>();
-                            for(int i = 0; i < tuple->args.size(); i++) {
-                                if(i > 0) o << ", ";
-                                // o << "${" << arg++ << ":" ;
-                                tuple->args[i]->print(p);
-                                // o << "}";
-                            }
-                            o << ")";
-                        } else {
-                            // o << "${" << arg++ << ":" ;
-                            fn->fn->param->print(p);
-                            // o << "}";
-                        }
-                    } else {
-                        o << "()";
-                    }
-                    item.label += buf.str();
-                } else if (auto fn = decl.type->isa<FnType>()) {
-                    item.label += "()";
-                }
-            }
-                
-            item.detail = get_completion_detail(&decl);
-            item.kind = get_completion_kind(&decl);
-            
-            // Add documentation if available
-            if (!decl.id.name.empty()) {
-                item.documentation = get_completion_documentation(&decl);
-            }
-
-            items.push_back(std::move(item));
-        };
 
         ast::Node::TraverseFn traverse([&](const ast::Node& node) -> bool {
             if(!node.loc.file) return true; // super module
@@ -1054,11 +1058,17 @@ void Server::setup_events_completion() {
                     }
                 }
             }
+        } else if(path_expr) {
+            log::info("path expression complete");
+            path_expr->dump();
+    
         } else {
             // generic context
             for (const auto& decl : compile->program->decls) {
-                if (auto named_decl = decl->isa<ast::NamedDecl>()) {
-                    add_decl(*named_decl);
+                if (const auto* named_decl = decl->isa<ast::NamedDecl>()) {
+                    if(auto item = completion_item(*named_decl)){
+                        items.push_back(std::move(*item));
+                    }
                 }
             }
         }
