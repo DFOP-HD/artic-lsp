@@ -1033,6 +1033,13 @@ void Server::setup_events_completion() {
                 .detail = "Break Statement",
                 .insertText = "break()",
             });
+
+            items.push_back(lsp::CompletionItem {
+                .label = "asm",
+                .kind = lsp::CompletionItemKind::Keyword,
+                .detail = "Assembly Block",
+                .insertText = "asm(\"$1\"$2);$0",
+            });
         }
         
         // Top level snippets
@@ -1115,6 +1122,8 @@ void Server::setup_events_completion() {
             show_prim_type("f32");
             show_prim_type("f64");
             show_prim_type("simd");
+            show_prim_type("mut");
+            show_prim_type("super");
 
             
             items.push_back(lsp::CompletionItem {
