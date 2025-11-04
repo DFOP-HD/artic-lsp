@@ -8,6 +8,7 @@
 #include "lsp/types.h"
 #include <lsp/connection.h>
 #include <lsp/messagehandler.h>
+#include <lsp/messagebase.h>
 #include "artic/ls/compile.h"
 #include <span>
 

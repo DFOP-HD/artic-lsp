@@ -42,6 +42,25 @@ struct ProjectRegistry {
     void print() const;
 };
 
+struct WorkspaceConfig {
+    std::filesystem::path path;
+    bool is_global = false;
+    std::optional<Project> default_project;
+    std::vector<Project> projects;
+    // mapping File -> project
+};
+
+// open or change file -> look for workspace config in parent folders
+// -> find workspace config file 
+// if not found
+//      look in current registered projects for file
+//      if 
+//          found use registered project
+//      else 
+//          use global config only
+// if already registered, select project
+// if not registered, register projects from config file
+
 class Workspace {
 public:
     Workspace(
