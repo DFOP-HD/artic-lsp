@@ -1047,6 +1047,7 @@ void Server::setup_events_completion() {
         if (inside_block_expr){
             // Declarations in local scope
             ast::Node::TraverseFn collect_local_decls([&](const ast::Node& node) -> bool {
+                // TODO this shows for definitions outside the loop `for a in ...` -> shows `a`
                 if(collect_local_decls.depth > 0 && node.isa<ast::BlockExpr>()) {
                     return false; // do not go into nested blocks
                 }
