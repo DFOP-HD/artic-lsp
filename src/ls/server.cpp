@@ -842,13 +842,14 @@ void Server::setup_events_completion() {
         bool show_prim_types = true;
         bool inside_block_expr = false;
         bool top_level = false;
+        static constexpr bool debug_print = false;
 
         std::vector<lsp::CompletionItem> items;
 
         ast::Node::TraverseFn traverse([&](const ast::Node& node) -> bool {
             if(!node.loc.file) return true; // super module
             if(!same_file(cursor, node.loc)) return false;
-            // log::info("test node at {} vs {}", node.loc, loc);
+            if constexpr (debug_print) log::info("test node at {} vs {}", node.loc, cursor);
             if(!overlaps(cursor, node.loc)) {
                 return false;
             } else if(!outer_node) {
@@ -870,15 +871,15 @@ void Server::setup_events_completion() {
             }
             inner_node = &node;
 
-            log::info("Node at {}", node.loc);
+            if constexpr (debug_print) log::info("Node at {}", node.loc);
             return true;
         });
         
         traverse(compile->program);
 
-        log::Output out(std::clog, false);
-        Printer p(out);
-        p.print_additional_node_info = true;
+        // log::Output out(std::clog, false);
+        // Printer p(out);
+        // p.print_additional_node_info = true;
         // if(outer_node) {
         //     log::info("\n-- Current Module");
         //     current_module->print(p);

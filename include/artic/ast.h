@@ -1007,7 +1007,14 @@ struct ForExpr : public LoopExpr {
     void bind(NameBinder&) override;
     void resolve_summons(Summoner&) override;
     void print(Printer&) const override;
-    void traverse_children(const TraverseFn& fn) const override { fn(call); }
+    void traverse_children(const TraverseFn& fn) const override { 
+        auto& iter = call->callee->as<ast::CallExpr>()->callee;
+        auto lambda = call->callee->as<ast::CallExpr>()->arg->as<ast::FnExpr>();
+        fn(lambda->param);
+        fn(iter);
+        fn(call->arg);
+        fn(lambda->body);
+    }
 };
 
 /// Break expression.
