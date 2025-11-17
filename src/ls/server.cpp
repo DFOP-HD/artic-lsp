@@ -834,17 +834,23 @@ void Server::setup_events_completion() {
         // const ast::ProjExpr* proj_expr = nullptr;
         // const ast::PathExpr* path_expr = nullptr;
         const ast::ModDecl* current_module = compile->program.get();
-        // const ast::FnDecl* current_function = nullptr;
         std::vector<const ast::Node*> local_scopes;
         const ast::Node* outer_node = nullptr;
         const ast::Node* inner_node = nullptr;
         bool only_show_types = false;
-        bool show_prim_types = true;
         bool inside_block_expr = false;
         bool top_level = false;
         static constexpr bool debug_print = false;
 
-        std::vector<lsp::CompletionItem> items;
+        auto is_type_decl = [](const ast::NamedDecl& decl) -> bool {
+            return decl.isa<ast::CtorDecl>() || decl.isa<ast::ModDecl>() || decl.isa<ast::TypeParam>() || decl.isa<ast::TypeDecl>() || decl.isa<ast::UseDecl>();
+        };
+
+        lsp::CompletionList result{
+            .isIncomplete = false,
+            .items = {},
+            .itemDefaults = lsp::CompletionListItemDefaults{ .insertTextFormat = lsp::InsertTextFormat::Snippet },
+        };
 
         ast::Node::TraverseFn traverse([&](const ast::Node& node) -> bool {
             if(!node.loc.file) return true; // super module
@@ -876,6 +882,10 @@ void Server::setup_events_completion() {
         });
         
         traverse(compile->program);
+        if(!current_module) {
+            log::info("Error with completion: current_module is null");
+            return result;
+        }
 
         // log::Output out(std::clog, false);
         // Printer p(out);
@@ -890,223 +900,245 @@ void Server::setup_events_completion() {
         //     inner_node->print(p);
         // }
 
+        // ---
+        // One possible modifier `only_show_types` if inside typed expression `a : type`
+        // 
+        // Different completion contexts:
+        // 1. Projection expression `a.b`
+        // 2. Path expression `a::b` (do not count if its just a single identifier `a`) | uses `only_show_types`
+        // 3. Top level declarations `struct a`
+        // 
+        // 4. Default: (includes case where inner_node cannot be identified) | uses `only_show_types`
+        // Show top_level decls in current module
+        // If inside block expr, also show local declarations
 
         if(inner_node) {
-            // Projection expression: a.b
+            // 1. Projection expression: a.b
             if(const auto* proj_expr = inner_node->isa<ast::ProjExpr>()) {
-                // log::info("inside proj expr completion");
+                log::info("Showing completion for ProjExpr");
                 proj_expr->dump();
                 const Type* type = nullptr;
-                if(proj_expr->type && !proj_expr->type->isa<TypeError>()) {
-                    // log::info("using proj expr type");
-                    type = proj_expr->type;
-                }
-                else if(proj_expr->expr->type && !proj_expr->expr->type->isa<TypeError>()){
-                    // log::info("using proj expr expr type");
-                    type = proj_expr->expr->type;
-                }
-                if(type){
-                    if(auto addr = type->isa<AddrType>(); addr && addr->pointee) { type = addr->pointee; }
-                    // type->dump();
-                    if(auto struct_type = type->isa<StructType>()){
+                if (auto t = proj_expr->type; t && !t->isa<TypeError>()) type = t;
+                else if (auto t = proj_expr->expr->type; t && !t->isa<TypeError>()) type = t;
+                if (type) {
+                    if(auto addr = type->isa<AddrType>(); addr && addr->pointee) type = addr->pointee; // remove reference
+                    if(auto app = type->isa<TypeApp>(); app && app-> applied) type = app->applied; // collapse polymorphic type
+                    if(auto struct_type = type->isa<StructType>()) {
                         for (auto& field : struct_type->decl.fields) {
-                            if(auto item = completion_item(*field)) items.push_back(std::move(*item));
+                            if(auto item = completion_item(*field)) result.items.push_back(std::move(*item));
+                        }
+                    } else if(auto enum_type = type->isa<EnumType>()) {
+                        for (auto& field : struct_type->decl.fields) {
+                            if(auto item = completion_item(*field)) result.items.push_back(std::move(*item));
                         }
                     }
+                    type->dump();
+                } else {
+                    log::info("type could not be identified");
                 }
-                current_module = nullptr; // no top level declarations
-                show_prim_types = false;
+                log::info("{} projection items", result.items.size());
+                return result;
             } 
-            // Path expression a::b
-            else if(const auto* path = inner_node->isa<ast::Path>(); path && path->elems.size() > 1) {
+            // 2. Path expression: a::b
+            if(const auto* path = inner_node->isa<ast::Path>(); path && path->elems.size() > 1) {
+                log::info("Showing completion for Path");
+                path->dump();
                 const ast::Path::Elem* path_elem = &path->elems.front();
-                for (const auto& elem: path->elems){
-                    if(cursor.end > elem.loc.end) {
-                        path_elem = &elem;
-                    }
+                // find element of path
+                for (const auto& elem: path->elems) {
+                    if(cursor.end > elem.loc.end) path_elem = &elem;
                 }
 
-                // log::info("path expression complete");
-                // path->dump();
-                // log::info("after element: {}", path_elem->id.name);
-                if(path_elem->type) {
-                    if(const auto* mod = path_elem->type->isa<ModType>()) {
-                        current_module = &mod->decl;
+                // Element type cannot be resolved -> no completion
+                if(!path_elem->type) return result;
+                
+                auto path_module = current_module;
+                if(const auto* mod = path_elem->type->isa<ModType>()) path_module = &mod->decl;
+
+                // Collect elements in current module
+                for (const auto& decl : path_module->decls) {
+                    if (const auto* named_decl = decl->isa<ast::NamedDecl>(); 
+                        named_decl && (!only_show_types || is_type_decl(*named_decl))
+                    ) {
+                        if(auto item = completion_item(*named_decl)) result.items.push_back(std::move(*item));
                     }
                 }
-                show_prim_types = false;
-                inside_block_expr = false; // dont show local vars
+                std::reverse(result.items.begin(), result.items.end());
+                return result;
             }
         }
         
-        log::info("show only types {}", only_show_types);
-        log::info("show prim types {}", show_prim_types);
-        log::info("has module: {}", (bool)current_module);
-        
-        if(current_module && !top_level){          
-            // decls inside current module
-            for (const auto& decl : current_module->decls) {
-                if (const auto* named_decl = decl->isa<ast::NamedDecl>(); named_decl && 
-                    (!only_show_types || decl->isa<ast::CtorDecl>() || decl->isa<ast::ModDecl>() || decl->isa<ast::TypeParam>() || decl->isa<ast::TypeDecl>() || decl->isa<ast::UseDecl>())
-                ) {
-                    if(auto item = completion_item(*named_decl)) items.push_back(std::move(*item));
-                }
-            }
-
-            if (inside_block_expr){
-                ast::Node::TraverseFn collect_local_decls([&](const ast::Node& node) -> bool {
-                    if(collect_local_decls.depth > 0 && node.isa<ast::BlockExpr>()) {
-                        return false; // do not go into nested blocks
-                    }
-                    if(const auto* named_decl = node.isa<ast::NamedDecl>(); named_decl) {
-                        if(auto item = completion_item(*named_decl)) items.push_back(std::move(*item));
-                    }
-                    return true;
-                });
-                for (const auto* scope : local_scopes) {
-                    collect_local_decls(*scope);
-                }
-            }
-        }
-
-        // Local snippets
-        if(current_module && inside_block_expr) {
-            items.push_back(lsp::CompletionItem {
-                .label = "for",
-                .kind = lsp::CompletionItemKind::Keyword,
-                .detail = "For Loop",
-                .insertText = "for ${1:i} in ${2:range} {\n\t$0\n}",
-            });
-
-            items.push_back(lsp::CompletionItem {
-                .label = "forrange",
-                .kind = lsp::CompletionItemKind::Keyword,
-                .detail = "Range For Loop",
-                .insertText = "for ${1:i} in range(${2:0}, ${3:count}) {\n\t$0\n}",
-            });
-
-            items.push_back(lsp::CompletionItem {
-                .label = "if",
-                .kind = lsp::CompletionItemKind::Keyword,
-                .detail = "If Statement",
-                .insertText = "if ${1:condition} {\n\t$0\n}",
-            });
-
-            items.push_back(lsp::CompletionItem {
-                .label = "else",
-                .kind = lsp::CompletionItemKind::Keyword,
-                .detail = "Else Statement",
-                .insertText = "else {\n\t$0\n}",
-            });
-
-            items.push_back(lsp::CompletionItem {
-                .label = "match",
-                .kind = lsp::CompletionItemKind::Keyword,
-                .detail = "Match Expression",
-                .insertText = "match ${1:expression} {\n\t${2:pattern} => ${3:result},\n\t${0}\n}",
-            });
-
-            items.push_back(lsp::CompletionItem {
-                .label = "let",
-                .kind = lsp::CompletionItemKind::Keyword,
-                .detail = "Let Binding",
-                .insertText = "let ${1:variable} = ${2:value};$0",
-            });
-
-            items.push_back(lsp::CompletionItem {
-                .label = "return",
-                .kind = lsp::CompletionItemKind::Keyword,
-                .detail = "Return Statement",
-                .insertText = "return($1)$0",
-            });
-
-            items.push_back(lsp::CompletionItem {
-                .label = "continue",
-                .kind = lsp::CompletionItemKind::Keyword,
-                .detail = "Continue Statement",
-                .insertText = "continue()",
-            });
-
-            items.push_back(lsp::CompletionItem {
-                .label = "break",
-                .kind = lsp::CompletionItemKind::Keyword,
-                .detail = "Break Statement",
-                .insertText = "break()",
-            });
-
-            items.push_back(lsp::CompletionItem {
-                .label = "asm",
-                .kind = lsp::CompletionItemKind::Keyword,
-                .detail = "Assembly Block",
-                .insertText = "asm(\"$1\"$2);$0",
-            });
-        }
-        
-        // Top level snippets
-        if(current_module && top_level) {
-            items.push_back(lsp::CompletionItem {
+        log::info("Showing completion for top level declaration");
+        // 3. Top level declaration: struct a
+        if(top_level) {
+            // Top level snippets
+            result.items.push_back(lsp::CompletionItem {
                 .label = "fn",
                 .kind = lsp::CompletionItemKind::Keyword,
                 .detail = "Function Declaration",
                 .insertText = "fn @${1:function}($2) -> ${3:ret_type} {\n\t$0\n}",
             });
 
-            items.push_back(lsp::CompletionItem {
+            result.items.push_back(lsp::CompletionItem {
                 .label = "struct",
                 .kind = lsp::CompletionItemKind::Keyword,
                 .detail = "Struct Declaration",
                 .insertText = "struct ${1:StructName} {\n\t${0}\n}",
             });
 
-            items.push_back(lsp::CompletionItem {
+            result.items.push_back(lsp::CompletionItem {
                 .label = "record",
                 .kind = lsp::CompletionItemKind::Keyword,
                 .detail = "Record Declaration",
                 .insertText = "struct ${1:RecordName}($2);$0",
             });
 
-            items.push_back(lsp::CompletionItem {
+            result.items.push_back(lsp::CompletionItem {
                 .label = "mod",
                 .kind = lsp::CompletionItemKind::Keyword,
                 .detail = "Module Declaration",
                 .insertText = "mod ${1:module_name} {\n\t${0}\n}",
             });
 
-            items.push_back(lsp::CompletionItem {
+            result.items.push_back(lsp::CompletionItem {
                 .label = "enum",
                 .kind = lsp::CompletionItemKind::Keyword,
                 .detail = "Enum Declaration",
                 .insertText = "enum ${1:EnumName} {\n\t${0}\n}",
             });
 
-            items.push_back(lsp::CompletionItem {
+            result.items.push_back(lsp::CompletionItem {
                 .label = "static",
                 .kind = lsp::CompletionItemKind::Keyword,
                 .detail = "Static Declaration",
                 .insertText = "static ${1:variable} = ${2:value};$0",
             });
 
-            items.push_back(lsp::CompletionItem {
+            result.items.push_back(lsp::CompletionItem {
                 .label = "type",
                 .kind = lsp::CompletionItemKind::Keyword,
                 .detail = "Type Alias Declaration",
                 .insertText = "type ${1:TypeName} = ${2:UnderlyingType};$0",
             });
 
-            items.push_back(lsp::CompletionItem {
+            result.items.push_back(lsp::CompletionItem {
                 .label = "use",
                 .kind = lsp::CompletionItemKind::Keyword,
                 .detail = "Use Declaration",
                 .insertText = "use ${1:module_name} as ${2:alias_name};$0",
             });
+
+            return result;
         }
-        
-        if(show_prim_types && !top_level) {
+
+        // 4. Default case
+        log::info("Showing default completion");
+        log::info("Only types: {}", only_show_types);
+
+        // Top level declarations in current module
+        for (const auto& decl : current_module->decls) {
+            if (const auto* named_decl = decl->isa<ast::NamedDecl>(); 
+                named_decl && (!only_show_types || is_type_decl(*named_decl))
+            ) {
+                if(auto item = completion_item(*named_decl)) result.items.push_back(std::move(*item));
+            }
+        }
+
+        if (inside_block_expr){
+            // Declarations in local scope
+            ast::Node::TraverseFn collect_local_decls([&](const ast::Node& node) -> bool {
+                if(collect_local_decls.depth > 0 && node.isa<ast::BlockExpr>()) {
+                    return false; // do not go into nested blocks
+                }
+                if (const auto* named_decl = node.isa<ast::NamedDecl>(); 
+                    named_decl && (!only_show_types || is_type_decl(*named_decl))
+                ) {
+                    if(auto item = completion_item(*named_decl)) result.items.push_back(std::move(*item));
+                }
+                return true;
+            });
+            for (const auto* scope : local_scopes) {
+                collect_local_decls(*scope);
+            }
+
+            // Local snippets
+            if(!only_show_types){
+                result.items.push_back(lsp::CompletionItem {
+                    .label = "for",
+                    .kind = lsp::CompletionItemKind::Keyword,
+                    .detail = "For Loop",
+                    .insertText = "for ${1:i} in ${2:range} {\n\t$0\n}",
+                });
+
+                result.items.push_back(lsp::CompletionItem {
+                    .label = "forrange",
+                    .kind = lsp::CompletionItemKind::Keyword,
+                    .detail = "Range For Loop",
+                    .insertText = "for ${1:i} in range(${2:0}, ${3:count}) {\n\t$0\n}",
+                });
+
+                result.items.push_back(lsp::CompletionItem {
+                    .label = "if",
+                    .kind = lsp::CompletionItemKind::Keyword,
+                    .detail = "If Statement",
+                    .insertText = "if ${1:condition} {\n\t$0\n}",
+                });
+
+                result.items.push_back(lsp::CompletionItem {
+                    .label = "else",
+                    .kind = lsp::CompletionItemKind::Keyword,
+                    .detail = "Else Statement",
+                    .insertText = "else {\n\t$0\n}",
+                });
+
+                result.items.push_back(lsp::CompletionItem {
+                    .label = "match",
+                    .kind = lsp::CompletionItemKind::Keyword,
+                    .detail = "Match Expression",
+                    .insertText = "match ${1:expression} {\n\t${2:pattern} => ${3:result},\n\t${0}\n}",
+                });
+
+                result.items.push_back(lsp::CompletionItem {
+                    .label = "let",
+                    .kind = lsp::CompletionItemKind::Keyword,
+                    .detail = "Let Binding",
+                    .insertText = "let ${1:variable} = ${2:value};$0",
+                });
+
+                result.items.push_back(lsp::CompletionItem {
+                    .label = "return",
+                    .kind = lsp::CompletionItemKind::Keyword,
+                    .detail = "Return Statement",
+                    .insertText = "return($1)$0",
+                });
+
+                result.items.push_back(lsp::CompletionItem {
+                    .label = "continue",
+                    .kind = lsp::CompletionItemKind::Keyword,
+                    .detail = "Continue Statement",
+                    .insertText = "continue()",
+                });
+
+                result.items.push_back(lsp::CompletionItem {
+                    .label = "break",
+                    .kind = lsp::CompletionItemKind::Keyword,
+                    .detail = "Break Statement",
+                    .insertText = "break()",
+                });
+
+                result.items.push_back(lsp::CompletionItem {
+                    .label = "asm",
+                    .kind = lsp::CompletionItemKind::Keyword,
+                    .detail = "Assembly Block",
+                    .insertText = "asm(\"$1\"$2);$0",
+                });
+            }
+            
             auto show_prim_type = [&](std::string_view prim){
                 lsp::CompletionItem item;
                 item.kind = lsp::CompletionItemKind::Keyword;
                 item.label = prim;
-                items.push_back(std::move(item));
+                result.items.push_back(std::move(item));
             };
             auto& types = compile->type_table;
             show_prim_type("bool");
@@ -1124,21 +1156,20 @@ void Server::setup_events_completion() {
             show_prim_type("simd");
             show_prim_type("mut");
             show_prim_type("super");
-
             
-            items.push_back(lsp::CompletionItem {
+            result.items.push_back(lsp::CompletionItem {
                 .label = "simd[...]",
                 .kind = lsp::CompletionItemKind::Keyword,
                 .insertText = "simd[${1:expr}]$0",
             });
 
-            items.push_back(lsp::CompletionItem {
+            result.items.push_back(lsp::CompletionItem {
                 .label = "addrspace(...)",
                 .kind = lsp::CompletionItemKind::Keyword,
                 .insertText = "addrspace(${1:1})$0",
             });
 
-            items.push_back(lsp::CompletionItem {
+            result.items.push_back(lsp::CompletionItem {
                 .label = "void",
                 .kind = lsp::CompletionItemKind::Keyword,
                 .detail = "()",
@@ -1146,15 +1177,7 @@ void Server::setup_events_completion() {
             });
         }
 
-        std::reverse(items.begin(), items.end());
-
-        lsp::CompletionList result{
-            .isIncomplete = false,
-            .items = std::move(items),
-            .itemDefaults = lsp::CompletionListItemDefaults{ .insertTextFormat = lsp::InsertTextFormat::Snippet },
-        };
-
-        log::info("[LSP] >>> Returning {} completion items", result.items.size());
+        std::reverse(result.items.begin(), result.items.end());
         return result;
     });
 }
