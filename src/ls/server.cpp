@@ -825,10 +825,6 @@ void Server::setup_events_completion() {
                  params.position.character + 1);
 
         ensure_compile(params.textDocument.uri.path());
-        if (!compile || !compile->program) {
-            log::info("[LSP] >>> No compilation available for completion");
-            return nullptr;
-        }
         // params.position.character--;
         Loc cursor = convert_loc(params.textDocument, params.position);
         // const ast::ProjExpr* proj_expr = nullptr;
@@ -1290,6 +1286,9 @@ void Server::compile_file(const std::filesystem::path& file) {
 
 void Server::ensure_compile(std::string_view file_view) {
     std::string file(file_view);
+    if(get_file_type(file_view) != FileType::SourceFile) {
+        throw lsp::RequestError(lsp::Error::InvalidParams, "File is not an Artic source file");
+    }
     bool already_compiled = compile && compile->locator.data(file);
     if (!already_compiled) compile_file(file);
     if (!compile) throw lsp::RequestError(lsp::Error::InternalError, "Did not get a compilation result");
