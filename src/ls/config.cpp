@@ -84,25 +84,25 @@ static inline std::vector<std::filesystem::path> find_matching_glob(std::filesys
     std::vector<std::filesystem::path> results;
     if(glob_pattern.empty()) return results;
 
-    // Handle ~ expansion and absolute patterns (limited support)
     if (glob_pattern[0] == '~') {
         const char* home = std::getenv("HOME");
         if (home) {
-            glob_pattern = glob_pattern.substr(1);
             root = home;
+            glob_pattern.erase(0, 1);
         } else {
             log.warn("Cannot expand ~ in pattern: " + glob_pattern + " $HOME is undefined", glob_pattern);
             return results;
         }
     }
-    // If pattern starts with '/', treat it as absolute (reset root)
-    if(!glob_pattern.empty() && glob_pattern[0] == '/') {
+    if(glob_pattern[0] == '/') {
         root = std::filesystem::path("/");
-        // remove leading '/'
         glob_pattern.erase(0, 1);
     }
 
-    if (!std::filesystem::exists(root) || !std::filesystem::is_directory(root)) return results;
+    if (!std::filesystem::exists(root) || !std::filesystem::is_directory(root)) {
+        log.error("Folder does not exist: {}", root.string());
+        return results;
+    }
 
     // Split pattern into components by '/'
     std::vector<std::string> parts; parts.reserve(8);
@@ -208,7 +208,7 @@ static std::shared_ptr<Project> instantiate_project(
         }
     }
 
-    std::filesystem::path root_dir = proj_def.origin.parent_path();
+    std::filesystem::path root_dir = proj_def.root_dir;
 
     // Collect all files matching include patterns and not matching exclude patterns
     std::unordered_set<std::filesystem::path> matched_files;
@@ -495,7 +495,30 @@ std::optional<ConfigDocument> ConfigDocument::parse(const IncludeConfig& config,
             }
             p.name = pj["name"].get<std::string>();
 
-            p.root_dir =      pj.value<std::string>("folder", "");
+            std::string folder_ptrn = pj.value<std::string>("folder", "");
+            std::filesystem::path root = config.path.parent_path();
+            if (folder_ptrn.empty()) {
+                p.root_dir = root;
+            } else {
+                if (folder_ptrn.starts_with("~/")) {
+                    const char* home = std::getenv("HOME");
+                    if (home) {
+                        root = home;
+                        folder_ptrn.erase(0, 2);
+                    } 
+                } else if(folder_ptrn.starts_with("/")) {
+                    root = std::filesystem::path("/");
+                    folder_ptrn.erase(0, 1);
+                }
+                auto res = root / folder_ptrn;
+                if(std::filesystem::exists(res) && std::filesystem::is_directory(res)) {
+                    p.root_dir = std::filesystem::weakly_canonical(res);
+                } else {
+                    log.error("Project folder does not exist: " + res.string(), pj.value<std::string>("folder", ""));
+                    p.root_dir = root;
+                }
+            }
+           
             p.dependencies =  pj.value<std::vector<std::string>>("dependencies", {});
             p.file_patterns = pj.value<std::vector<std::string>>("files", {});
             p.origin = config.path;
