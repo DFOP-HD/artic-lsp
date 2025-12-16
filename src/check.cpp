@@ -1762,6 +1762,12 @@ const artic::Type* StaticDecl::infer(TypeChecker& checker) {
         }
     }
     checker.exit_decl(this);
+    // TODO can't add type hint here because there is no `Node` but rather just an identifier, 
+    // so we cant place it behind the identifier
+    // -> need to change add_type_hint to accept (identifier, type)?
+    // if(checker.name_map) {
+    //     checker.name_map->add_type_hint(*this);
+    // }
     return checker.type_table.ref_type(value_type, is_mut, 0);
 }
 

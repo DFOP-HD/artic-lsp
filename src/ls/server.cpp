@@ -362,9 +362,11 @@ SemanticToken create_semantic_token(const Loc& loc, const ast::NamedDecl& decl, 
         token.modifiers |= flag(md::Definition);
         token.modifiers |= flag(md::Declaration);
     }
-    
-    if(decl.type) {
-        if(auto fn = decl.type->isa<FnType>()){
+    auto type = decl.type;
+    if(type) {
+        if(auto addr = type->isa<AddrType>(); addr && addr->pointee) type = addr->pointee; // remove reference
+        if(auto app = type->isa<TypeApp>(); app && app-> applied) type = app->applied; // collapse polymorphic type
+        if(auto fn = type->isa<FnType>()){
             token.type = (uint32_t) ty::Function;
             if(fn->codom->isa<NoRetType>())
                 token.type = (uint32_t) ty::Keyword; // continuation
