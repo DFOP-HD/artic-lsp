@@ -260,20 +260,16 @@ void Server::setup_events_modifications() {
         // workspace_->mark_file_dirty(file);
 
         auto& content = std::get<lsp::TextDocumentContentChangeEvent_Text>(params.contentChanges[0]).text;
-        workspace_->set_file_content(file, std::move(content));
-        compile_file(file);
+        compile_file(file, &content);
     });
 
     message_handler_.add<notif::TextDocument_DidSave>([this](notif::TextDocument_DidSave::Params&& params) {
         log::info("\n[LSP] <<< TextDocument DidSave");
-        // compile.reset();
-        // auto file = params.textDocument.uri.path();
-        // if(get_file_type(file) == FileType::ConfigFile) {
-        //     reload_workspace();
-        //     return;
-        // }
-        // compile_file(file);
-        // (void)message_handler_.sendRequest<reqst::Workspace_SemanticTokens_Refresh>();
+        std::filesystem::path file = params.textDocument.uri.path();
+        if(get_file_type(file) == FileType::ConfigFile) {
+            reload_workspace();
+            return;
+        }
     });
 
     // Workspace ----------------------------------------------------------------------
@@ -1191,14 +1187,18 @@ void Server::setup_events_completion() {
 //
 // -----------------------------------------------------------------------------
 
-void Server::compile_file(const std::filesystem::path& file) {
+void Server::compile_file(const std::filesystem::path& file, std::string* new_content) {
     Timer _("Compile Files");
+
 
     std::vector<const workspace::File*> files;
     compile.emplace();
     compile->active_file = file;
 
-    if(auto proj = workspace_->project_for_file(file)){
+    if (auto proj = workspace_->project_for_file(file)) {
+        if (new_content) 
+            workspace_->set_file_content(file, std::move(*new_content));
+
         // known project    
         log::info("Compiling file {} (project '{}')", file, proj.value()->name);
 
@@ -1211,7 +1211,12 @@ void Server::compile_file(const std::filesystem::path& file) {
         
         files = default_proj->collect_files();
         auto temp_file = std::make_unique<workspace::File>(file);
-        temp_file->read();
+        if (new_content) {
+            temp_file->text = std::move(*new_content);
+        } else {
+            temp_file->read();
+        }
+        
         files.push_back(temp_file.get());
 
         // keep the temporary file alive for diagnostics
