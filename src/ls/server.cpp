@@ -674,6 +674,7 @@ lsp::CompletionItem completion_item(const ast::FnDecl* fn) {
     std::ostream str0(&lb);
     log::Output label(str0, false);
     Printer l(label);
+    item.filterText = fn->id.name;
 
     label << fn->id.name;
 
@@ -1202,7 +1203,7 @@ void Server::compile_file(const std::filesystem::path& file) {
         files = proj.value()->collect_files();
     } else {
         // default project
-        auto default_proj = workspace_->default_project();
+        const auto& default_proj = workspace_->default_project();
         
         log::info("Compiling file {} (not in workspace -> using default project {})", file, default_proj->name);
         

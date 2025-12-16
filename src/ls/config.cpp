@@ -420,7 +420,7 @@ void Workspace::reload(config::ConfigLog& log) {
         auto project = std::make_shared<Project>();
         project->name = "<no project>";
         project->files = {};
-        project-> dependencies = {};
+        project->dependencies = {};
         projects_.default_project = project;
     }
 
